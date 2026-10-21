@@ -70,7 +70,7 @@ jobs:
           PUB = '1978serg-cpu/cw-execution-approvals'
           OWNER = '1978serg-cpu'
           THIS_WORKFLOW = 'one-shot-gateway.yml'
-          MARKER = 'cw-issue88-single-paid-v4-consumed'
+          MARKER = 'cw-issue88-single-paid-v5-consumed'
           MAX_PARENT_AGE_SECONDS = 17 * 60
 
           class Denied(Exception):
@@ -272,12 +272,12 @@ jobs:
           PUB = '1978serg-cpu/cw-execution-approvals'
           OWNER = '1978serg-cpu'
           SOURCE_BRANCH = 'feature/emergency-close-persistence'
-          SOURCE_HEAD = '8d306c7cc268063830f84be5016a40dc218baff1'
-          QUEUE_HEAD = '489c0fd8951a08c534a7bb58264a4c6c363514da'
+          SOURCE_HEAD = '28d6ef09aaf60c3a94146138718289fc17bdd89a'
+          QUEUE_HEAD = '65c134a7b89f761fa98161a18f6e4b0ce48c478f'
           DISPATCH_BLOB = '4d14bd11135c51ef48731538d0759250b15bacf6'
           DISPATCHER = 'gh-aw-dispatcher-probe.lock.yml'
           WORKER = 'gh-aw-worker-probe.lock.yml'
-          MARKER = 'refs/heads/cw-issue88-single-paid-v4-consumed'
+          MARKER = 'refs/heads/cw-issue88-single-paid-v5-consumed'
           THIS_WORKFLOW = 'one-shot-gateway.yml'
           OWNER_ID = 344015223
           PUB_ID = 1428447847
@@ -305,7 +305,7 @@ jobs:
                   'Accept': 'application/vnd.github+json',
                   'Authorization': 'Bearer ' + token,
                   'X-GitHub-Api-Version': '2022-11-28',
-                  'User-Agent': 'cw-public-owner-one-shot-v4',
+                  'User-Agent': 'cw-public-owner-one-shot-v5',
                   'Content-Type': 'application/json',
               })
               try:
