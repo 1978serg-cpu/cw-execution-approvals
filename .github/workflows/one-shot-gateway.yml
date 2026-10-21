@@ -485,9 +485,12 @@ jobs:
                   for workflow in (DISPATCHER, WORKER):
                       doc = api(SRC, 'GET', 'actions/workflows/' + workflow + '/runs?per_page=40', source_token)
                       rows = doc.get('workflow_runs', []) if isinstance(doc, dict) else []
+                      expected_branch = (SOURCE_BRANCH if workflow == DISPATCHER else
+                                         'gh-aw/work-queue/' + SOURCE_HEAD)
                       new = [r for r in rows if r.get('id') not in previous[workflow] and
                              r.get('event') == 'workflow_dispatch' and
-                             r.get('head_branch') == SOURCE_BRANCH and
+                             r.get('path') == '.github/workflows/' + workflow and
+                             r.get('head_branch') == expected_branch and
                              r.get('head_sha') == SOURCE_HEAD and
                              iso_seconds(r.get('created_at')) >= started - 20]
                       if len(new) > 1:
