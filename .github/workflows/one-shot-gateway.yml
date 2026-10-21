@@ -141,7 +141,7 @@ jobs:
                       doc.get('run_attempt') == 1 and
                       doc.get('event') == 'workflow_dispatch' and
                       doc.get('actor', {}).get('login') == OWNER and
-                      doc.get('name') == 'CW issue88 one-shot + independent OFF (NO MODEL WATCHDOG)' and
+                      doc.get('path') == '.github/workflows/one-shot-gateway.yml' and
                       doc.get('display_title', '').startswith('CW issue88 paid_pilot ')):
                   return False
               age = time.time() - started_at(doc)
@@ -360,7 +360,7 @@ jobs:
               }
               if any(os.environ.get(k) != v for k, v in expected.items()):
                   raise Blocked('OWNER_RUN_CONTEXT_INVALID')
-              if os.environ.get('CW_PROVIDER_CAP_OWNER_ATTESTATION') != 'I_VERIFIED_ENFORCED_PROJECT_CAP_FOR_5_USD_PILOT':
+              if os.environ.get('CW_PROVIDER_CAP_OWNER_ATTESTATION') != 'I_VERIFIED_ENFORCED_PROJECT_CAP_FOR_10_USD_PILOT':
                   raise Blocked('OWNER_PROJECT_CAP_ATTESTATION_MISSING')
               if not os.environ.get('CW_GATEWAY_OPERATOR_TOKEN') or not os.environ.get('GH_PUBLIC_TOKEN'):
                   raise Blocked('OPERATOR_CREDENTIALS_MISSING')
