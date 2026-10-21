@@ -1,0 +1,583 @@
+# OWNER APPROVAL GATEWAY — NO source/trading code, NO OpenAI Admin key.
+# ONE paid Issue88 pilot per immutable Git ref, with separate OFF-only watchdog.
+# IMPORTANT: No token becomes usable until configured by owner in GitHub.
+name: CW issue88 one-shot + independent OFF (NO MODEL WATCHDOG)
+run-name: CW issue88 ${{ inputs.mode || 'scheduled_off' }} ${{ inputs.parent_run_id || '0' }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "off_selftest before a paid_pilot; off_watch is internally dispatched"
+        type: choice
+        required: true
+        default: off_selftest
+        options:
+          - off_selftest
+          - paid_pilot
+          - off_watch
+      parent_run_id:
+        description: "Internal watchdog link; keep 0 for manual runs"
+        required: false
+        type: string
+        default: "0"
+  schedule:
+    - cron: '*/5 * * * *'
+
+permissions: {}
+
+jobs:
+  independent-off:
+    if: >-
+      github.repository == '1978serg-cpu/cw-execution-approvals' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'schedule' ||
+       (github.event_name == 'workflow_dispatch' &&
+        (inputs.mode == 'off_selftest' || inputs.mode == 'off_watch')))
+    name: Independent OFF-only watchdog
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    concurrency:
+      group: cw-issue88-gateway-emergency-off
+      cancel-in-progress: false
+    steps:
+      - name: Verify gate OFF or guard active pilot (no models)
+        shell: bash
+        env:
+          GH_PUBLIC_TOKEN: ${{ github.token }}
+          CW_GATEWAY_SHUTOFF_TOKEN: ${{ secrets.CW_GATEWAY_SHUTOFF_TOKEN }}
+          CW_MODE: ${{ github.event_name == 'schedule' && 'scheduled_off' || inputs.mode }}
+          CW_PARENT_RUN_ID: ${{ inputs.parent_run_id }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PYCODE'
+          """Independent PUBLIC approval-gateway watchdog, separate Actions run.
+          It may ONLY PATCH CW_CODEX_PAID_ENABLED=false; never enables/dispatches.
+          Requires a distinct source Variables:write-only repository-scoped PAT.
+          """
+          import datetime as dt
+          import json
+          import os
+          import sys
+          import time
+          import urllib.error
+          import urllib.request
+
+          SRC = '1978serg-cpu/crypto-watchdog'
+          PUB = '1978serg-cpu/cw-execution-approvals'
+          OWNER = '1978serg-cpu'
+          THIS_WORKFLOW = 'one-shot-gateway.yml'
+          MARKER = 'cw-issue88-single-paid-v2-consumed'
+          MAX_PARENT_AGE_SECONDS = 17 * 60
+
+          class Denied(Exception):
+              pass
+
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl):
+                  raise Denied('REDIRECT_DENIED')
+
+
+          def api(repo, method, path, token, body=None):
+              if repo not in (SRC, PUB) or method not in ('GET', 'PATCH'):
+                  raise Denied('UNAPPROVED_OFF_API')
+              if not token or len(token) < 15:
+                  raise Denied('OFF_TOKEN_MISSING')
+              payload = None if body is None else json.dumps(body).encode()
+              req = urllib.request.Request('https://api.github.com/repos/' + repo + '/' + path,
+                                           data=payload, method=method, headers={
+                  'Authorization': 'Bearer ' + token,
+                  'Accept': 'application/vnd.github+json',
+                  'Content-Type': 'application/json',
+                  'X-GitHub-Api-Version': '2022-11-28',
+                  'User-Agent': 'cw-source-independent-off-only',
+              })
+              try:
+                  with urllib.request.build_opener(NoRedirect()).open(req, timeout=12) as r:
+                      if r.status not in (200, 201, 204):
+                          raise Denied('OFF_GITHUB_API_BAD_STATUS')
+                      raw = r.read(200000)
+                      return json.loads(raw) if raw.strip() else None
+              except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, ValueError):
+                  raise Denied('OFF_GITHUB_API_UNAVAILABLE') from None
+
+
+          def read_gate(source_token):
+              result = api(SRC, 'GET', 'actions/variables/CW_CODEX_PAID_ENABLED', source_token)
+              if not isinstance(result, dict) or result.get('name') != 'CW_CODEX_PAID_ENABLED':
+                  raise Denied('OFF_SOURCE_VAR_MISSING')
+              if result.get('value') not in ('true', 'false'):
+                  raise Denied('OFF_SOURCE_VAR_INVALID')
+              return result['value']
+
+
+          def force_off(source_token):
+              # The ONLY mutation allowed to the private repository in this script.
+              api(SRC, 'PATCH', 'actions/variables/CW_CODEX_PAID_ENABLED', source_token,
+                  {'name': 'CW_CODEX_PAID_ENABLED', 'value': 'false'})
+              if read_gate(source_token) != 'false':
+                  raise Denied('CRITICAL_OFF_READBACK_FAILED')
+              print('SOURCE_PAID_GATE_OFF_VERIFIED')
+
+
+          def started_at(run):
+              try:
+                  return dt.datetime.fromisoformat(run['created_at'].replace('Z', '+00:00')).timestamp()
+              except (KeyError, AttributeError, ValueError):
+                  return -1
+
+
+          def public_parent_is_active(pub_token, parent_id):
+              if not isinstance(parent_id, int) or parent_id <= 0:
+                  return False
+              doc = api(PUB, 'GET', 'actions/runs/' + str(parent_id), pub_token)
+              if not isinstance(doc, dict):
+                  return False
+              if not (doc.get('id') == parent_id and
+                      doc.get('head_branch') == 'main' and
+                      doc.get('run_attempt') == 1 and
+                      doc.get('event') == 'workflow_dispatch' and
+                      doc.get('actor', {}).get('login') == OWNER and
+                      doc.get('name') == 'CW issue88 one-shot + independent OFF (NO MODEL WATCHDOG)' and
+                      doc.get('display_title', '').startswith('CW issue88 paid_pilot ')):
+                  return False
+              age = time.time() - started_at(doc)
+              return doc.get('status') in ('queued', 'in_progress', 'waiting', 'pending') and 0 <= age < MAX_PARENT_AGE_SECONDS
+
+
+          def active_public_pilot(public_token):
+              runs = api(PUB, 'GET', 'actions/workflows/' + THIS_WORKFLOW + '/runs?per_page=30', public_token)
+              rows = runs.get('workflow_runs', []) if isinstance(runs, dict) else []
+              if not isinstance(rows, list) or len(rows) > 30:
+                  raise Denied('OFF_PUBLIC_RUNS_UNKNOWN')
+              return any(isinstance(r, dict) and r.get('display_title', '').startswith('CW issue88 paid_pilot ') and
+                         r.get('actor', {}).get('login') == OWNER and
+                         r.get('event') == 'workflow_dispatch' and
+                         r.get('run_attempt') == 1 and
+                         r.get('status') in ('queued', 'in_progress', 'waiting', 'pending') and
+                         0 <= time.time() - started_at(r) < MAX_PARENT_AGE_SECONDS
+                         for r in rows)
+
+
+          def run():
+              token = os.environ.get('CW_GATEWAY_SHUTOFF_TOKEN', '')
+              pub_token = os.environ.get('GH_PUBLIC_TOKEN', '')
+              mode = os.environ.get('CW_MODE', '')
+              if (os.environ.get('GITHUB_REPOSITORY') != PUB or
+                      os.environ.get('GITHUB_REF') != 'refs/heads/main' or
+                      mode not in ('off_selftest', 'off_watch', 'scheduled_off')):
+                  raise Denied('OFF_CONTEXT_NOT_ALLOWED')
+              # Selftest always patches False, even if variable is already off; proves
+              # distinct token's ability to force a write and verify readback.
+              if mode == 'off_selftest':
+                  if os.environ.get('GITHUB_ACTOR') != OWNER:
+                      raise Denied('OFF_SELFTEST_OWNER_REQUIRED')
+                  force_off(token)
+                  print('OFF_SELFTEST_SUCCESS_NO_MODEL_NO_SPEND')
+                  return 0
+              if mode == 'scheduled_off':
+                  if read_gate(token) == 'false':
+                      print('SCHEDULED_GATE_HEALTHY_OFF')
+                      return 0
+                  try:
+                      active = active_public_pilot(pub_token)
+                  except Denied:
+                      active = False
+                  if not active:
+                      force_off(token)
+                      print('SCHEDULED_ORPHANED_GATE_DISABLED')
+                  else:
+                      print('SCHEDULED_APPROVED_PILOT_STILL_WITHIN_TTL')
+                  return 0
+              # A distinct Actions workflow_dispatch run with a separate token and
+              # runner must remain alive while the approved controller is working.
+              if os.environ.get('GITHUB_EVENT_NAME') != 'workflow_dispatch':
+                  raise Denied('ARM_REQUIRES_WORKFLOW_DISPATCH')
+              try:
+                  parent = int(os.environ.get('CW_PARENT_RUN_ID', ''))
+              except ValueError:
+                  raise Denied('BAD_OFF_PARENT_ID') from None
+              print('INDEPENDENT_OFF_WATCHDOG_ACTIVE', flush=True)
+              deadline = time.monotonic() + 18 * 60
+              while time.monotonic() < deadline:
+                  try:
+                      alive = public_parent_is_active(pub_token, parent)
+                  except Denied:
+                      alive = False
+                  if not alive:
+                      force_off(token)
+                      print('CONTROLLER_TERMINAL_OR_UNVERIFIABLE_GATE_OFF')
+                      return 0
+                  time.sleep(15)
+              force_off(token)
+              print('EMERGENCY_TTL_GATE_OFF')
+              return 0
+
+
+          if __name__ == '__main__':
+              try:
+                  sys.exit(run())
+              except Denied as exc:
+                  print('OFF_WATCHDOG_BLOCKED', str(exc))
+                  sys.exit(2)
+          PYCODE
+
+  pilot:
+    if: >-
+      github.repository == '1978serg-cpu/cw-execution-approvals' &&
+      github.repository_id == '1428447847' &&
+      github.ref == 'refs/heads/main' &&
+      github.event_name == 'workflow_dispatch' &&
+      inputs.mode == 'paid_pilot' &&
+      github.actor == '1978serg-cpu' &&
+      github.run_attempt == 1
+    name: One specifically owner-approved Issue88 pilot
+    environment: paid-one-shot
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    permissions:
+      contents: write   # atomic fixed public one-shot marker (not private source writes)
+      actions: write    # start independent, separate watchdog Actions run
+    concurrency:
+      group: cw-issue88-only-one-paid-pilot
+      cancel-in-progress: false
+    steps:
+      - name: Enforce approval, budget, replay marker, watchdog, one dispatch and finally OFF
+        shell: bash
+        env:
+          GH_PUBLIC_TOKEN: ${{ github.token }}
+          CW_GATEWAY_OPERATOR_TOKEN: ${{ secrets.CW_GATEWAY_OPERATOR_TOKEN }}
+          CW_PROVIDER_CAP_OWNER_ATTESTATION: ${{ vars.CW_PROVIDER_CAP_OWNER_ATTESTATION }}
+          CW_MODE: ${{ inputs.mode }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PYCODE'
+          """One authorized bounded pilot, executed ONLY inside protected public Environment.
+
+          Fixed one-shot transaction. Source: the private Issue88 gh-aw workflow.
+          No OpenAI admin credential or source worker inference key enters this gateway.
+          """
+          import datetime as dt
+          import json
+          import os
+          import sys
+          import time
+          import urllib.error
+          import urllib.request
+
+          SRC = '1978serg-cpu/crypto-watchdog'
+          PUB = '1978serg-cpu/cw-execution-approvals'
+          OWNER = '1978serg-cpu'
+          SOURCE_BRANCH = 'feature/emergency-close-persistence'
+          SOURCE_HEAD = '5cf88a22cb5c28ec0b8a6b2c0c17f8f1a22163f6'
+          QUEUE_HEAD = 'b620adcceffe22f644725120a9bf143964b34cd7'
+          DISPATCH_BLOB = '4d14bd11135c51ef48731538d0759250b15bacf6'
+          DISPATCHER = 'gh-aw-dispatcher-probe.lock.yml'
+          WORKER = 'gh-aw-worker-probe.lock.yml'
+          MARKER = 'refs/heads/cw-issue88-single-paid-v2-consumed'
+          THIS_WORKFLOW = 'one-shot-gateway.yml'
+          OWNER_ID = 344015223
+          PUB_ID = 1428447847
+          MAX_WAIT = 13 * 60
+          API_ROOT = 'https://api.github.com/'
+
+          class Blocked(Exception):
+              pass
+
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl):
+                  raise Blocked('REDIRECT_DENIED')
+
+
+          def api(repo, method, path, token, body=None, *, allow_404=False):
+              if repo not in (SRC, PUB) or method not in ('GET', 'PATCH', 'POST'):
+                  raise Blocked('UNAPPROVED_API')
+              if not token or len(token) < 15:
+                  raise Blocked('MISSING_RESTRICTED_TOKEN')
+              url = API_ROOT + 'repos/' + repo + '/' + path
+              if any(c in path for c in ('?', '#')) and '# ' in path:
+                  raise Blocked('INVALID_ROUTE')
+              payload = None if body is None else json.dumps(body, separators=(',', ':')).encode()
+              req = urllib.request.Request(url, data=payload, method=method, headers={
+                  'Accept': 'application/vnd.github+json',
+                  'Authorization': 'Bearer ' + token,
+                  'X-GitHub-Api-Version': '2022-11-28',
+                  'User-Agent': 'cw-public-owner-one-shot-v2',
+                  'Content-Type': 'application/json',
+              })
+              try:
+                  with urllib.request.build_opener(NoRedirect()).open(req, timeout=15) as resp:
+                      if resp.status not in (200, 201, 204):
+                          raise Blocked('GITHUB_NON_SUCCESS')
+                      raw = resp.read(600000)
+                      return json.loads(raw) if raw.strip() else None
+              except urllib.error.HTTPError as exc:
+                  if allow_404 and exc.code == 404:
+                      return None
+                  raise Blocked('GITHUB_API_ERROR') from None
+              except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+                  raise Blocked('GITHUB_API_UNAVAILABLE') from None
+
+
+          def iso_seconds(value):
+              try:
+                  return dt.datetime.fromisoformat(value.replace('Z', '+00:00')).timestamp()
+              except (AttributeError, ValueError):
+                  return -1
+
+
+          def gate(token):
+              result = api(SRC, 'GET', 'actions/variables/CW_CODEX_PAID_ENABLED', token)
+              if not isinstance(result, dict) or result.get('name') != 'CW_CODEX_PAID_ENABLED':
+                  raise Blocked('GATE_VARIABLE_NOT_CONFIRMED')
+              if result.get('value') not in ('true', 'false'):
+                  raise Blocked('INVALID_GATE_VALUE')
+              return result['value']
+
+
+          def change_gate(token, state):
+              if state not in ('true', 'false'):
+                  raise Blocked('INVALID_GATE_WRITE')
+              api(SRC, 'PATCH', 'actions/variables/CW_CODEX_PAID_ENABLED', token,
+                  {'name': 'CW_CODEX_PAID_ENABLED', 'value': state})
+              if gate(token) != state:
+                  raise Blocked('GATE_READBACK_FAILED')
+
+
+          def owner_context():
+              expected = {
+                  'GITHUB_REPOSITORY': PUB,
+                  'GITHUB_REPOSITORY_ID': str(PUB_ID),
+                  'GITHUB_REF': 'refs/heads/main',
+                  'GITHUB_EVENT_NAME': 'workflow_dispatch',
+                  'GITHUB_ACTOR': OWNER,
+                  'GITHUB_ACTOR_ID': str(OWNER_ID),
+                  'GITHUB_RUN_ATTEMPT': '1',
+                  'CW_MODE': 'paid_pilot',
+              }
+              if any(os.environ.get(k) != v for k, v in expected.items()):
+                  raise Blocked('OWNER_RUN_CONTEXT_INVALID')
+              if os.environ.get('CW_PROVIDER_CAP_OWNER_ATTESTATION') != 'I_VERIFIED_ENFORCED_PROJECT_CAP_FOR_5_USD_PILOT':
+                  raise Blocked('OWNER_PROJECT_CAP_ATTESTATION_MISSING')
+              if not os.environ.get('CW_GATEWAY_OPERATOR_TOKEN') or not os.environ.get('GH_PUBLIC_TOKEN'):
+                  raise Blocked('OPERATOR_CREDENTIALS_MISSING')
+              try:
+                  run = int(os.environ['GITHUB_RUN_ID'])
+              except (KeyError, ValueError):
+                  raise Blocked('INVALID_PUBLIC_RUN_ID') from None
+              sha = os.environ.get('GITHUB_SHA', '')
+              if len(sha) != 40 or any(c not in '0123456789abcdef' for c in sha):
+                  raise Blocked('INVALID_PUBLIC_WORKFLOW_SHA')
+              return run, sha
+
+
+          def verify_approved_environment(public_token, run_id, sha):
+              r = api(PUB, 'GET', 'actions/runs/' + str(run_id), public_token)
+              if (not isinstance(r, dict) or r.get('id') != run_id or
+                  r.get('head_sha') != sha or r.get('head_branch') != 'main' or
+                  r.get('event') != 'workflow_dispatch' or r.get('run_attempt') != 1 or
+                  r.get('actor', {}).get('id') != OWNER_ID):
+                  raise Blocked('GATEWAY_RUN_NOT_BOUND')
+              approvals = api(PUB, 'GET', 'actions/runs/' + str(run_id) + '/approvals', public_token)
+              if not isinstance(approvals, list) or len(approvals) != 1:
+                  raise Blocked('EXACT_OWNER_REVIEW_MISSING')
+              a = approvals[0]
+              envs = a.get('environments', [])
+              if (a.get('state') != 'approved' or
+                  a.get('user', {}).get('id') != OWNER_ID or
+                  not isinstance(envs, list) or len(envs) != 1 or
+                  envs[0].get('name') != 'paid-one-shot' or
+                  envs[0].get('can_admins_bypass') is not False):
+                  raise Blocked('OWNER_ENVIRONMENT_APPROVAL_INVALID')
+              branch = api(PUB, 'GET', 'branches/main', public_token)
+              if not isinstance(branch, dict) or branch.get('protected') is not True or branch.get('commit', {}).get('sha') != sha:
+                  raise Blocked('PUBLIC_PROTECTED_MAIN_DRIFTED')
+
+
+          def recent_watchdog_test(public_token, sha):
+              doc = api(PUB, 'GET', 'actions/workflows/' + THIS_WORKFLOW + '/runs?per_page=50', public_token)
+              runs = doc.get('workflow_runs', []) if isinstance(doc, dict) else []
+              if not isinstance(runs, list) or len(runs) > 50:
+                  raise Blocked('WATCHDOG_SELFTEST_HISTORY_UNAVAILABLE')
+              now = time.time()
+              if not any(r.get('display_title', '').startswith('CW issue88 off_selftest ') and
+                         r.get('event') == 'workflow_dispatch' and
+                         r.get('actor', {}).get('id') == OWNER_ID and
+                         r.get('head_sha') == sha and r.get('conclusion') == 'success' and
+                         r.get('run_attempt') == 1 and
+                         0 <= now - iso_seconds(r.get('created_at')) < 3600 for r in runs):
+                  raise Blocked('RECENT_OFF_WATCHDOG_SELFTEST_MISSING')
+
+
+          def source_checks(source_token):
+              if gate(source_token) != 'false':
+                  raise Blocked('SOURCE_GATE_MUST_START_OFF')
+              branch = api(SRC, 'GET', 'branches/' + SOURCE_BRANCH, source_token)
+              if branch.get('commit', {}).get('sha') != SOURCE_HEAD:
+                  raise Blocked('PRIVATE_SOURCE_SHA_DRIFTED')
+              queue = api(SRC, 'GET', 'git/ref/heads/work-queue', source_token)
+              if queue.get('object', {}).get('sha') != QUEUE_HEAD:
+                  raise Blocked('NATIVE_QUEUE_NOT_READY')
+              compiled = api(SRC, 'GET', 'contents/.github/workflows/' + DISPATCHER + '?ref=' + SOURCE_HEAD, source_token)
+              if compiled.get('sha') != DISPATCH_BLOB:
+                  raise Blocked('COMPILED_DISPATCHER_CHANGED')
+              previous = {}
+              for workflow in (DISPATCHER, WORKER):
+                  doc = api(SRC, 'GET', 'actions/workflows/' + workflow + '/runs?per_page=40', source_token)
+                  rows = doc.get('workflow_runs', []) if isinstance(doc, dict) else []
+                  if not isinstance(rows, list) or len(rows) > 40:
+                      raise Blocked('SOURCE_RUNS_UNAVAILABLE')
+                  if any(r.get('status') in ('queued', 'in_progress', 'waiting', 'pending', 'requested') for r in rows):
+                      raise Blocked('ANOTHER_PAID_WORKFLOW_ACTIVE')
+                  previous[workflow] = {r.get('id') for r in rows}
+              return previous
+
+
+          def consume(public_token, sha):
+              ref_path = 'git/ref/heads/' + MARKER.split('/')[-1]
+              existing = api(PUB, 'GET', ref_path, public_token, allow_404=True)
+              if existing is not None:
+                  raise Blocked('ONE_SHOT_ALREADY_CONSUMED')
+              # GitHub's create-ref operation is atomic: never retry an ambiguous POST.
+              api(PUB, 'POST', 'git/refs', public_token, {'ref': MARKER, 'sha': sha})
+              confirmed = api(PUB, 'GET', ref_path, public_token)
+              if not isinstance(confirmed, dict) or confirmed.get('ref') != MARKER or confirmed.get('object', {}).get('sha') != sha:
+                  raise Blocked('CONSUMED_MARKER_NOT_VERIFIED')
+
+
+          def arm_watchdog(public_token, controller_run_id, sha):
+              api(PUB, 'POST', 'actions/workflows/' + THIS_WORKFLOW + '/dispatches', public_token,
+                  {'ref': 'main', 'inputs': {'mode': 'off_watch', 'parent_run_id': str(controller_run_id)}})
+              deadline = time.monotonic() + 90
+              title = 'CW issue88 off_watch ' + str(controller_run_id)
+              running_since = None
+              while time.monotonic() < deadline:
+                  doc = api(PUB, 'GET', 'actions/workflows/' + THIS_WORKFLOW + '/runs?per_page=40', public_token)
+                  rows = doc.get('workflow_runs', []) if isinstance(doc, dict) else []
+                  matches = [r for r in rows if (r.get('display_title') == title and
+                             r.get('head_sha') == sha and r.get('event') == 'workflow_dispatch')]
+                  if len(matches) > 1:
+                      raise Blocked('MULTIPLE_WATCHDOG_RUNS')
+                  if matches:
+                      watch = matches[0]
+                      if watch.get('status') == 'in_progress':
+                          if running_since is None:
+                              running_since = time.monotonic()
+                          # Prove independent runner survived startup and read-token
+                          # initialisation, rather than merely briefly being scheduled.
+                          if time.monotonic() - running_since >= 25:
+                              return watch.get('id')
+                      elif watch.get('status') != 'in_progress':
+                          running_since = None
+                      if watch.get('status') == 'completed':
+                          raise Blocked('EMERGENCY_WATCHDOG_DID_NOT_STAY_ARMED')
+                  time.sleep(5)
+              raise Blocked('INDEPENDENT_WATCHDOG_NOT_STARTED')
+
+
+          def monitor_worker(source_token, previous, started):
+              deadline = time.monotonic() + MAX_WAIT
+              seen = {}
+              while time.monotonic() < deadline:
+                  for workflow in (DISPATCHER, WORKER):
+                      doc = api(SRC, 'GET', 'actions/workflows/' + workflow + '/runs?per_page=40', source_token)
+                      rows = doc.get('workflow_runs', []) if isinstance(doc, dict) else []
+                      new = [r for r in rows if r.get('id') not in previous[workflow] and
+                             r.get('event') == 'workflow_dispatch' and
+                             r.get('head_branch') == SOURCE_BRANCH and
+                             r.get('head_sha') == SOURCE_HEAD and
+                             iso_seconds(r.get('created_at')) >= started - 20]
+                      if len(new) > 1:
+                          raise Blocked('MULTIPLE_NEW_PAID_WORKFLOWS')
+                      if new:
+                          seen[workflow] = new[0]
+                  worker = seen.get(WORKER)
+                  dispatcher = seen.get(DISPATCHER)
+                  if dispatcher and dispatcher.get('status') == 'completed' and dispatcher.get('conclusion') != 'success':
+                      raise Blocked('DISPATCHER_FAILED')
+                  if worker and worker.get('status') == 'completed':
+                      if worker.get('conclusion') != 'success':
+                          raise Blocked('WORKER_FAILED_OR_SKIPPED')
+                      if dispatcher and dispatcher.get('status') == 'completed':
+                          return (dispatcher['id'], worker['id'])
+                  if not dispatcher and time.monotonic() + 0 > deadline - MAX_WAIT + 120:
+                      raise Blocked('NO_DISPATCHER_AFTER_ONE_POST')
+                  time.sleep(12)
+              raise Blocked('PAID_PILOT_TIMEOUT_UNVERIFIED_RESULT')
+
+
+          def run():
+              src_token = os.environ.get('CW_GATEWAY_OPERATOR_TOKEN', '')
+              pub_token = os.environ.get('GH_PUBLIC_TOKEN', '')
+              run_id, sha = owner_context()
+              gate_attempted = False
+              consumed = False
+              status = 'BLOCKED_BEFORE_SPEND'
+              reason = None
+              source_runs = None
+              try:
+                  verify_approved_environment(pub_token, run_id, sha)
+                  recent_watchdog_test(pub_token, sha)
+                  source_runs = source_checks(src_token)
+                  # Recheck off before marker; no concurrent source paid worker is allowed.
+                  if gate(src_token) != 'false':
+                      raise Blocked('SOURCE_GATE_CHANGED_BEFORE_CONSUMPTION')
+                  consume(pub_token, sha)
+                  consumed = True
+                  arm_watchdog(pub_token, run_id, sha)
+                  gate_attempted = True
+                  change_gate(src_token, 'true')
+                  started = time.time()
+                  # One POST maximum. Errors may represent ambiguous launch. Never retry.
+                  api(SRC, 'POST', 'actions/workflows/' + DISPATCHER + '/dispatches', src_token,
+                      {'ref': SOURCE_BRANCH})
+                  source_run_ids = monitor_worker(src_token, source_runs, started)
+                  status = 'WORKFLOWS_COMPLETED_NATIVE_RESULT_PENDING'
+                  print('WORKFLOWS_COMPLETED_NATIVE_RESULT_PENDING (PR/CI/Result still unverified)')
+                  print('SOURCE_DISPATCHER_RUN_ID', source_run_ids[0])
+                  print('SOURCE_WORKER_RUN_ID', source_run_ids[1])
+              except Blocked as exc:
+                  reason = str(exc)
+                  status = 'BLOCKED_OR_FAILED'
+              except Exception:
+                  reason = 'UNEXPECTED_CONTROLLER_ERROR'
+                  status = 'BLOCKED_OR_FAILED'
+              finally:
+                  if gate_attempted:
+                      off = False
+                      for attempt in range(3):
+                          try:
+                              change_gate(src_token, 'false')
+                              off = True
+                              break
+                          except Exception:
+                              time.sleep(2)
+                      if not off:
+                          status = 'CRITICAL_GATE_OFF_UNVERIFIED'
+                          reason = 'INDEPENDENT_WATCHDOG_MUST_SHUT_DOWN'
+                  elif consumed:
+                      # Marker consumed but gate not attempted: abort safely, no paid retry.
+                      try:
+                          if gate(src_token) != 'false':
+                              change_gate(src_token, 'false')
+                      except Exception:
+                          status = 'CRITICAL_GATE_OFF_UNVERIFIED'
+              print('GATEWAY_ONE_SHOT_STATUS', status)
+              if reason:
+                  print('GATEWAY_REFUSAL', reason)
+              print('NATIVE_RESULT_VERIFIED', 'false')
+              print('PAID_MODE_OFF_AT_FINALIZER', 'true' if status != 'CRITICAL_GATE_OFF_UNVERIFIED' else 'unverified')
+              return 0 if status == 'WORKFLOWS_COMPLETED_NATIVE_RESULT_PENDING' else 2
+
+
+          if __name__ == '__main__':
+              try:
+                  sys.exit(run())
+              except Blocked as exc:
+                  # Context verification itself is safe pre-spend; no token contents printed.
+                  print('GATEWAY_REFUSAL', str(exc))
+                  sys.exit(2)
+          PYCODE
