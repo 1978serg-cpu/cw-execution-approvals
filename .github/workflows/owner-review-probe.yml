@@ -1,0 +1,39 @@
+name: Owner environment reviewer probe (NO MODEL / NO SPEND)
+
+# This is ONLY an approval smoke test. It has no repository writes,
+# no secrets, no OpenAI/model call, and cannot dispatch another workflow.
+on:
+  workflow_dispatch: {}
+
+permissions: {}
+
+concurrency:
+  group: no-spend-owner-environment-review-probe
+  cancel-in-progress: false
+
+jobs:
+  require-owner-review:
+    if: >-
+      github.repository == '1978serg-cpu/cw-execution-approvals' &&
+      github.ref == 'refs/heads/main' &&
+      github.actor == '1978serg-cpu' &&
+      github.event_name == 'workflow_dispatch' &&
+      github.run_attempt == 1
+    environment:
+      name: paid-one-shot
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Confirm exact inert workflow context (NO SPEND)
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "1978serg-cpu/cw-execution-approvals"
+          test "$GITHUB_REF" = "refs/heads/main"
+          test "$GITHUB_ACTOR" = "1978serg-cpu"
+          test "$GITHUB_EVENT_NAME" = "workflow_dispatch"
+          test "$GITHUB_RUN_ATTEMPT" = "1"
+          echo "OWNER_REVIEW_GATE_PROBE_NO_MODEL_NO_SPEND"
+          echo "A success does not prove mandatory reviewer protection unless"
+          echo "GitHub Settings > Environments and waiting-for-review"
+          echo "were independently inspected before approval."
