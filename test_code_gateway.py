@@ -20,7 +20,7 @@ class Fixture:
     def __init__(self):
         self.now = 1792689000
         self.calls = []
-        self.source_sha, self.public_sha, self.work_id = "a" * 40, "b" * 40, "c" * 64
+        self.source_sha, self.public_sha, self.work_id = "a" * 40, "b" * 40, gateway.RECOVERY_WORK_ID
         self.environment = {"GITHUB_REPOSITORY": gateway.PUBLIC, "GITHUB_REPOSITORY_ID": str(gateway.PUBLIC_ID),
             "GITHUB_REF": "refs/heads/main", "GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_ACTOR": "1978serg-cpu",
             "GITHUB_ACTOR_ID": str(gateway.OWNER_ID), "GITHUB_RUN_ATTEMPT": "1",
@@ -45,6 +45,21 @@ class Fixture:
             "actor": {"login": "1978serg-cpu", "id": gateway.OWNER_ID}}
         self.reviews = [{"state": "approved", "user": {"id": gateway.OWNER_ID},
             "environments": [{"name": "paid-one-shot", "can_admins_bypass": False}]}]
+        self.original_marker = {"ref": "refs/heads/" + gateway.ORIGINAL_MARKER,
+            "object": {"sha": gateway.ORIGINAL_PUBLIC_SHA}}
+        self.previous = {}
+        for repository, repository_id, run_id, sha, branch, workflow, actor, title in (
+            (gateway.PUBLIC, gateway.PUBLIC_ID, "39840999602", gateway.ORIGINAL_PUBLIC_SHA, "main", "code-gateway.yml",
+             gateway.OWNER_ID, "CW issue129 code " + gateway.ORIGINAL_WORK_ID),
+            (gateway.SOURCE, gateway.SOURCE_ID, "39841115852", gateway.ORIGINAL_SOURCE_SHA, gateway.BRANCH, gateway.CONTROLLER,
+             gateway.OWNER_ID, "CW issue129 launch " + gateway.ORIGINAL_WORK_ID),
+            (gateway.SOURCE, gateway.SOURCE_ID, "39841262708", gateway.ORIGINAL_SOURCE_SHA,
+             "gh-aw/work-queue/" + gateway.ORIGINAL_SOURCE_SHA, "gh-aw-code-worker.lock.yml", 41898282,
+             "gh-aw work-queue d_ef8262a3e68600f48828dad443358ce5a9ac11d458fd935b078a1b2a965ac864_1")):
+            row = self.run(int(run_id), repository, repository_id, sha, branch, workflow)
+            row.update(status="completed", conclusion="failure", display_title=title,
+                actor={"id": actor}, triggering_actor={"id": actor})
+            self.previous[run_id] = row
 
     def run(self, run_id, repository, repository_id, sha, branch, workflow):
         return {"id": run_id, "repository": {"full_name": repository, "id": repository_id},
@@ -62,6 +77,10 @@ class Fixture:
         if self.fail and self.fail(repository, method, path, body):
             raise ValueError("synthetic lost reply")
         if method == "GET":
+            if path == "git/ref/heads/" + gateway.ORIGINAL_MARKER:
+                return copy.deepcopy(self.original_marker)
+            if path.startswith("actions/runs/") and path.endswith("/attempts/1"):
+                return copy.deepcopy(self.previous[path.split("/")[2]])
             if repository == gateway.SOURCE and path == "":
                 return {"full_name": gateway.SOURCE, "id": gateway.SOURCE_ID, "default_branch": gateway.BRANCH}
             if path == "git/ref/heads/" + gateway.BRANCH:
@@ -121,6 +140,39 @@ class Fixture:
 
 
 class GatewayTests(unittest.TestCase):
+    def test_one_successor_preserves_original_marker_and_has_a_separate_consumption_record(self):
+        f = Fixture()
+        original = copy.deepcopy(f.original_marker)
+        f.execute()
+        self.assertEqual(f.original_marker, original)
+        creates = [c for c in f.calls if c[1] == "POST" and c[2] == "git/refs"]
+        self.assertEqual([c[3]["ref"] for c in creates], ["refs/heads/" + gateway.MARKER])
+        self.assertNotEqual(gateway.MARKER, gateway.ORIGINAL_MARKER)
+
+    def test_predecessor_drift_or_unknown_outcome_never_consumes_or_dispatches(self):
+        changes = (
+            lambda f: setattr(f, "original_marker", None),
+            lambda f: f.original_marker["object"].update(sha="d" * 40),
+            lambda f: f.environment.update(CW_WORK_ID=gateway.ORIGINAL_WORK_ID),
+            lambda f: f.environment.update(CW_WORK_ID="d" * 64),
+            lambda f: f.environment.update(CW_SOURCE_SHA=gateway.ORIGINAL_SOURCE_SHA),
+        )
+        for mutate in changes:
+            with self.subTest(change=changes.index(mutate)):
+                f = Fixture(); mutate(f)
+                with self.assertRaises(Exception):
+                    f.execute()
+                self.assertTrue(all(c[1] == "GET" for c in f.calls))
+        for run_id in ("39840999602", "39841115852", "39841262708"):
+            for change in ({"status": "in_progress", "conclusion": None}, {"conclusion": "success"},
+                           {"run_attempt": 2}, {"head_sha": "d" * 40}, {"event": "push"},
+                           {"actor": {"id": 123}}, {"repository": {"full_name": "foreign", "id": 0}}):
+                with self.subTest(run=run_id, change=change):
+                    f = Fixture(); f.previous[run_id].update(change)
+                    with self.assertRaises(Exception):
+                        f.execute()
+                    self.assertTrue(all(c[1] == "GET" for c in f.calls))
+
     def test_read_only_preflight_never_creates_marker_lease_dispatch_or_enables(self):
         f = Fixture()
         f.environment["CW_PREFLIGHT_ONLY"] = "true"
