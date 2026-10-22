@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import sys
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).parent
 sys.path.insert(0, str(ROOT))
@@ -119,6 +120,30 @@ class Fixture:
 
 
 class GatewayTests(unittest.TestCase):
+    def test_realistic_fifty_run_api_response_and_finite_byte_ceiling(self):
+        listing = {"workflow_runs": [{"id": i, "repository_metadata": "x" * 14000}
+                                    for i in range(50)]}
+        raw = json.dumps(listing).encode()
+        self.assertGreater(len(raw), 262144)
+        for body, accepted in ((raw, True),
+                               (b" " * (gateway.MAX_API_RESPONSE_BYTES + 1), False),
+                               (b'{"workflow_runs":[],"workflow_runs":[]}', False)):
+            with self.subTest(accepted=accepted, size=len(body)):
+                reply = mock.MagicMock()
+                reply.status = 200
+                reply.__enter__.return_value = reply
+                reply.read.side_effect = lambda limit: body[:limit]
+                opener = mock.Mock()
+                opener.open.return_value = reply
+                with mock.patch.object(gateway.urllib.request, "build_opener", return_value=opener):
+                    args = (gateway.PUBLIC, "GET", "actions/runs?per_page=50", "synthetic-public-token")
+                    if accepted:
+                        self.assertEqual(gateway.api(*args), listing)
+                    else:
+                        with self.assertRaisesRegex(ValueError, "CODE_GATEWAY_OUTCOME_UNKNOWN_NO_RETRY"):
+                            gateway.api(*args)
+                reply.read.assert_called_once_with(gateway.MAX_API_RESPONSE_BYTES + 1)
+
     def test_one_native_dispatch_independent_watchdog_lease_and_both_off(self):
         f = Fixture()
         self.assertEqual(f.execute(), "CODE_CONTROLLER_COMPLETED_NATIVE_RESULT_REQUIRES_READBACK")
