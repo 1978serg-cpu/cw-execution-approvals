@@ -11,6 +11,11 @@ on:
         description: Exact authenticated Code Work digest
         required: true
         type: string
+      preflight_only:
+        description: Read-only readiness check; disable only for the authorized native launch
+        required: true
+        type: boolean
+        default: true
   pull_request:
     types: [opened, synchronize, reopened]
     paths:
@@ -54,4 +59,5 @@ jobs:
           CW_GATEWAY_OPERATOR_TOKEN: ${{ secrets.CW_GATEWAY_OPERATOR_TOKEN }}
           CW_SOURCE_SHA: ${{ inputs.source_sha }}
           CW_WORK_ID: ${{ inputs.work_id }}
+          CW_PREFLIGHT_ONLY: ${{ inputs.preflight_only && 'true' || 'false' }}
         run: python3 code_gateway.py
