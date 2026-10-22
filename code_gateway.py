@@ -22,6 +22,9 @@ CONTROLLER = "orchestrator-code-controller.yml"
 WATCHDOG = "one-shot-gateway.yml"
 MARKER = "cw-issue129-code-package-consumed"
 LIVE = ("requested", "queued", "in_progress", "waiting", "pending")
+# GitHub's bounded 50-run listing includes repository/user metadata per row.
+# Keep a finite byte ceiling while allowing the real listing (~700 KiB).
+MAX_API_RESPONSE_BYTES = 2 * 1024 * 1024
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -48,8 +51,8 @@ def api(repository, method, path, token, body=None):
     try:
         with urllib.request.build_opener(NoRedirect()).open(request, timeout=12) as response:
             require(response.status in (200, 201, 204))
-            raw = response.read(262145)
-            require(len(raw) <= 262144)
+            raw = response.read(MAX_API_RESPONSE_BYTES + 1)
+            require(len(raw) <= MAX_API_RESPONSE_BYTES)
             return json.loads(raw, object_pairs_hook=unique) if raw.strip() else None
     except urllib.error.HTTPError as exc:
         if method == "GET" and exc.code == 404:
@@ -170,11 +173,14 @@ def arm_watchdog(call, token, own, *, clock, monotonic, pause):
 def execute(environment, *, call=api, clock=time.time, monotonic=time.monotonic, pause=time.sleep):
     own = context(environment)
     source_token, public_token = environment["CW_GATEWAY_OPERATOR_TOKEN"], environment["GH_PUBLIC_TOKEN"]
+    print("CODE_GATEWAY_VERIFY_APPROVAL", flush=True)
     own_run = approval(call, public_token, own, int(clock()))
+    print("CODE_GATEWAY_VERIFY_SOURCE_OFF_AND_UNUSED_BUDGET", flush=True)
     source_preflight(call, source_token, own["CW_SOURCE_SHA"])
     require(call(PUBLIC, "GET", "git/ref/heads/" + MARKER, public_token) is None)
     # From here any uncertain outcome consumes the attempt. Never repeat a POST.
     try:
+        print("CODE_GATEWAY_CONSUME_ONCE_AND_DISPATCH", flush=True)
         call(PUBLIC, "POST", "git/refs", public_token, {"ref": "refs/heads/" + MARKER, "sha": own["GITHUB_SHA"]})
         marker = call(PUBLIC, "GET", "git/ref/heads/" + MARKER, public_token)
         require(marker.get("ref") == "refs/heads/" + MARKER and marker.get("object", {}).get("sha") == own["GITHUB_SHA"])
@@ -197,6 +203,7 @@ def execute(environment, *, call=api, clock=time.time, monotonic=time.monotonic,
             source_token, value)
         stored = call(SOURCE, "GET", "actions/variables/" + LEASE, source_token)
         require(stored.get("name") == LEASE and stored.get("value") == value["value"])
+        print("CODE_GATEWAY_ARM_INDEPENDENT_OFF", flush=True)
         arm_watchdog(call, public_token, own, clock=clock, monotonic=monotonic, pause=pause)
         for repository, token, run_id in ((PUBLIC, public_token, own["GITHUB_RUN_ID"]), (SOURCE, source_token, str(source["id"]))):
             current = call(repository, "GET", "actions/runs/" + run_id, token)
@@ -210,6 +217,7 @@ def execute(environment, *, call=api, clock=time.time, monotonic=time.monotonic,
         for name in (CODE, PAID):
             call(SOURCE, "PATCH", "actions/variables/" + name, source_token, {"name": name, "value": "true"})
             require(read_gate(call, source_token, name) == "true")
+        print("CODE_GATEWAY_FINITE_CODE_WINDOW_ACTIVE", flush=True)
         deadline = monotonic() + max(0, lease["expires_at"] - int(clock()))
         while monotonic() < deadline:
             current = call(SOURCE, "GET", "actions/runs/" + str(source["id"]), source_token)
