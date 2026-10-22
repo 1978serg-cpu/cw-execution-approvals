@@ -3,6 +3,7 @@ import base64
 import copy
 import datetime as dt
 import json
+import io
 from pathlib import Path
 import sys
 import unittest
@@ -120,6 +121,35 @@ class Fixture:
 
 
 class GatewayTests(unittest.TestCase):
+    def test_read_only_preflight_never_creates_marker_lease_dispatch_or_enables(self):
+        f = Fixture()
+        f.environment["CW_PREFLIGHT_ONLY"] = "true"
+        self.assertEqual(f.execute(), "CODE_GATEWAY_PREFLIGHT_VERIFIED_NO_DISPATCH_NO_SPEND")
+        self.assertTrue(all(c[1] == "GET" for c in f.calls))
+        self.assertIsNone(f.marker)
+        self.assertIsNone(f.lease)
+        self.assertFalse(f.dispatched)
+        self.assertFalse(f.watching)
+        self.assertEqual(list(f.gates.values()), ["false", "false"])
+        f = Fixture()
+        f.environment["CW_PREFLIGHT_ONLY"] = "yes"
+        with self.assertRaises(Exception):
+            f.execute()
+        self.assertEqual(f.calls, [])
+
+    def test_http_error_diagnostic_contains_only_status_never_url_body_or_credential(self):
+        opener = mock.Mock()
+        opener.open.side_effect = gateway.urllib.error.HTTPError(
+            "https://example.invalid/synthetic-private-url", 403,
+            "synthetic-private-response", {}, None)
+        output = io.StringIO()
+        with mock.patch.object(gateway.urllib.request, "build_opener", return_value=opener), \
+                mock.patch("sys.stdout", output):
+            with self.assertRaisesRegex(ValueError, "CODE_GATEWAY_OUTCOME_UNKNOWN_NO_RETRY"):
+                gateway.api(gateway.SOURCE, "GET", "git/ref/heads/" + gateway.BRANCH,
+                            "synthetic-private-token")
+        self.assertEqual(output.getvalue(), "CODE_GATEWAY_HTTP_ERROR_403\n")
+
     def test_realistic_fifty_run_api_response_and_finite_byte_ceiling(self):
         listing = {"workflow_runs": [{"id": i, "repository_metadata": "x" * 14000}
                                     for i in range(50)]}

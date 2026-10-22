@@ -57,6 +57,9 @@ def api(repository, method, path, token, body=None):
     except urllib.error.HTTPError as exc:
         if method == "GET" and exc.code == 404:
             return None
+        # Never echo the response, URL, credential, or exception text.
+        if type(exc.code) is int and 100 <= exc.code <= 599:
+            print("CODE_GATEWAY_HTTP_ERROR_" + str(exc.code), flush=True)
         raise ValueError("CODE_GATEWAY_OUTCOME_UNKNOWN_NO_RETRY") from None
     except Exception:
         raise ValueError("CODE_GATEWAY_OUTCOME_UNKNOWN_NO_RETRY") from None
@@ -82,18 +85,23 @@ def rows(document, name):
 
 
 def source_preflight(call, token, source_sha):
+    print("CODE_GATEWAY_READ_SOURCE_IDENTITY", flush=True)
     repository = call(SOURCE, "GET", "", token)
     require(repository.get("full_name") == SOURCE and repository.get("id") == SOURCE_ID
             and repository.get("default_branch") == BRANCH)
+    print("CODE_GATEWAY_READ_SOURCE_HEAD", flush=True)
     tip = call(SOURCE, "GET", "git/ref/heads/" + BRANCH, token)
     require(tip.get("object", {}).get("sha") == source_sha)
+    print("CODE_GATEWAY_READ_BOTH_OFF_FLAGS", flush=True)
     require(all(read_gate(call, token, name) == "false" for name in (PAID, CODE)))
+    print("CODE_GATEWAY_READ_UNUSED_PACKAGE_BUDGET", flush=True)
     file = call(SOURCE, "GET", "contents/package-budget.json?ref=cw-issue129-budget", token)
     require(file.get("type") == "file" and file.get("encoding") == "base64" and file.get("size", 999999) <= 65536)
     budget = json.loads(base64.b64decode(file["content"], validate=False), object_pairs_hook=unique)
     require(budget.get("package") == "issue129-20261022" and budget.get("cap_cents") == 1000
             and budget.get("max_requests") == 10 and budget.get("revision") == 0 and budget.get("entries") == [])
     for workflow in (CONTROLLER, "gh-aw-code-worker.lock.yml", "gh-aw-worker-probe.lock.yml", "gh-aw-dispatcher-probe.lock.yml"):
+        print("CODE_GATEWAY_CHECK_IDLE_" + workflow.replace(".yml", "").replace(".lock", "").replace("-", "_").upper(), flush=True)
         history = rows(call(SOURCE, "GET", "actions/workflows/" + workflow + "/runs?per_page=50", token), "workflow_runs")
         require(not any(run.get("status") in LIVE for run in history))
 
@@ -172,12 +180,16 @@ def arm_watchdog(call, token, own, *, clock, monotonic, pause):
 
 def execute(environment, *, call=api, clock=time.time, monotonic=time.monotonic, pause=time.sleep):
     own = context(environment)
+    preflight_only = environment.get("CW_PREFLIGHT_ONLY", "false")
+    require(preflight_only in ("true", "false"))
     source_token, public_token = environment["CW_GATEWAY_OPERATOR_TOKEN"], environment["GH_PUBLIC_TOKEN"]
     print("CODE_GATEWAY_VERIFY_APPROVAL", flush=True)
     own_run = approval(call, public_token, own, int(clock()))
     print("CODE_GATEWAY_VERIFY_SOURCE_OFF_AND_UNUSED_BUDGET", flush=True)
     source_preflight(call, source_token, own["CW_SOURCE_SHA"])
     require(call(PUBLIC, "GET", "git/ref/heads/" + MARKER, public_token) is None)
+    if preflight_only == "true":
+        return "CODE_GATEWAY_PREFLIGHT_VERIFIED_NO_DISPATCH_NO_SPEND"
     # From here any uncertain outcome consumes the attempt. Never repeat a POST.
     try:
         print("CODE_GATEWAY_CONSUME_ONCE_AND_DISPATCH", flush=True)
