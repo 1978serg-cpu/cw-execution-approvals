@@ -16,6 +16,11 @@ on:
         required: true
         type: boolean
         default: true
+      repair_stale_audit_only:
+        description: Cancel only identified failed audit 39829136653; turn preflight off; never launch code
+        required: true
+        type: boolean
+        default: false
   pull_request:
     types: [opened, synchronize, reopened]
     paths:
@@ -60,4 +65,5 @@ jobs:
           CW_SOURCE_SHA: ${{ inputs.source_sha }}
           CW_WORK_ID: ${{ inputs.work_id }}
           CW_PREFLIGHT_ONLY: ${{ inputs.preflight_only && 'true' || 'false' }}
+          CW_REPAIR_STALE_AUDIT_ONLY: ${{ inputs.repair_stale_audit_only && 'true' || 'false' }}
         run: python3 code_gateway.py
