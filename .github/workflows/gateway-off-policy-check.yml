@@ -1,0 +1,19 @@
+name: Independent OFF policy checks (NO MODEL)
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+permissions:
+  contents: read
+jobs:
+  offline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Check shared lease and actual integrated watchdog with inert fixtures
+        run: python3 -m unittest -v test_orchestrator_code_lease test_gateway_off_policy
