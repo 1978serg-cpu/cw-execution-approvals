@@ -25,6 +25,10 @@ LIVE = ("requested", "queued", "in_progress", "waiting", "pending")
 # GitHub's bounded 50-run listing includes repository/user metadata per row.
 # Keep a finite byte ceiling while allowing the real listing (~700 KiB).
 MAX_API_RESPONSE_BYTES = 2 * 1024 * 1024
+STALE_AUDIT_RUN = "39829136653"
+STALE_AUDIT_JOB = 120000293032
+STALE_AUDIT_SHA = "0ce91af5f558942e271d06416eb14ded9a99142a"
+STALE_AUDIT_CANCEL = "actions/runs/" + STALE_AUDIT_RUN + "/force-cancel"
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -39,7 +43,7 @@ def api(repository, method, path, token, body=None):
     if method != "GET":
         allowed = (
             repository == SOURCE and method == "PATCH" and path in tuple("actions/variables/" + x for x in (PAID, CODE, LEASE))
-            or repository == SOURCE and method == "POST" and path in ("actions/variables", "actions/workflows/" + CONTROLLER + "/dispatches")
+            or repository == SOURCE and method == "POST" and path in ("actions/variables", "actions/workflows/" + CONTROLLER + "/dispatches", STALE_AUDIT_CANCEL)
             or repository == PUBLIC and method == "POST" and path in ("git/refs", "actions/workflows/" + WATCHDOG + "/dispatches")
         )
         require(allowed)
@@ -50,7 +54,8 @@ def api(repository, method, path, token, body=None):
             "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "cw-issue129-code-gateway"})
     try:
         with urllib.request.build_opener(NoRedirect()).open(request, timeout=12) as response:
-            require(response.status in (200, 201, 204))
+            require(response.status in (200, 201, 204) or
+                    response.status == 202 and repository == SOURCE and method == "POST" and path == STALE_AUDIT_CANCEL)
             raw = response.read(MAX_API_RESPONSE_BYTES + 1)
             require(len(raw) <= MAX_API_RESPONSE_BYTES)
             return json.loads(raw, object_pairs_hook=unique) if raw.strip() else None
@@ -84,7 +89,50 @@ def rows(document, name):
     return document[name]
 
 
-def source_preflight(call, token, source_sha):
+def repair_stale_audit(call, token, source_sha, *, clock, monotonic, pause):
+    """Cancel only the identified failed audit; never an execution/watchdog run."""
+    require(source_sha == STALE_AUDIT_SHA)
+    path = "actions/runs/" + STALE_AUDIT_RUN
+
+    def identity(run):
+        require(type(run) is dict and run.get("id") == int(STALE_AUDIT_RUN)
+            and run.get("repository", {}).get("full_name") == SOURCE
+            and run.get("repository", {}).get("id") == SOURCE_ID
+            and run.get("head_sha") == STALE_AUDIT_SHA and run.get("head_branch") == BRANCH
+            and run.get("path") == ".github/workflows/" + CONTROLLER
+            and run.get("display_title") == "CW issue129 audit 0" and run.get("event") == "push"
+            and run.get("run_attempt") == 1)
+        require(all(run.get(name, {}).get("id") == OWNER_ID
+            and run.get(name, {}).get("login") == "1978serg-cpu" for name in ("actor", "triggering_actor")))
+
+    run = call(SOURCE, "GET", path, token)
+    identity(run)
+    require(run.get("status") == "in_progress" and run.get("conclusion") is None
+        and 1800 <= int(clock()) - created_at(run) <= 86400)
+    jobs = rows(call(SOURCE, "GET", path + "/jobs?per_page=50", token), "jobs")
+    require(len(jobs) == 1 and jobs[0].get("id") == STALE_AUDIT_JOB
+        and jobs[0].get("name") == "control" and jobs[0].get("status") == "completed"
+        and jobs[0].get("conclusion") == "failure")
+    steps = jobs[0].get("steps")
+    require(type(steps) is list and steps and all(step.get("status") == "completed" for step in steps)
+        and any(step.get("name") == "Audit or admit via original authenticated native publisher"
+            and step.get("conclusion") == "failure" for step in steps))
+    require(all(read_gate(call, token, name) == "false" for name in (PAID, CODE)))
+    print("CODE_GATEWAY_FORCE_CANCEL_IDENTIFIED_FAILED_AUDIT_ONCE", flush=True)
+    call(SOURCE, "POST", STALE_AUDIT_CANCEL, token)  # No POST retry, including an uncertain reply.
+    deadline = monotonic() + 75
+    while monotonic() < deadline:
+        current = call(SOURCE, "GET", path, token)
+        identity(current)
+        if current.get("status") == "completed":
+            require(current.get("conclusion") in ("cancelled", "failure"))
+            return
+        pause(3)
+    raise ValueError("STALE_AUDIT_TERMINATION_UNVERIFIED_NO_RETRY")
+
+
+def source_preflight(call, token, source_sha, *, repair=False, clock=time.time,
+                     monotonic=time.monotonic, pause=time.sleep):
     print("CODE_GATEWAY_READ_SOURCE_IDENTITY", flush=True)
     repository = call(SOURCE, "GET", "", token)
     require(repository.get("full_name") == SOURCE and repository.get("id") == SOURCE_ID
@@ -100,6 +148,8 @@ def source_preflight(call, token, source_sha):
     budget = json.loads(base64.b64decode(file["content"], validate=False), object_pairs_hook=unique)
     require(budget.get("package") == "issue129-20261022" and budget.get("cap_cents") == 1000
             and budget.get("max_requests") == 10 and budget.get("revision") == 0 and budget.get("entries") == [])
+    if repair:
+        repair_stale_audit(call, token, source_sha, clock=clock, monotonic=monotonic, pause=pause)
     for workflow in (CONTROLLER, "gh-aw-code-worker.lock.yml", "gh-aw-worker-probe.lock.yml", "gh-aw-dispatcher-probe.lock.yml"):
         print("CODE_GATEWAY_CHECK_IDLE_" + workflow.replace(".yml", "").replace(".lock", "").replace("-", "_").upper(), flush=True)
         history = rows(call(SOURCE, "GET", "actions/workflows/" + workflow + "/runs?per_page=50", token), "workflow_runs")
@@ -181,12 +231,17 @@ def arm_watchdog(call, token, own, *, clock, monotonic, pause):
 def execute(environment, *, call=api, clock=time.time, monotonic=time.monotonic, pause=time.sleep):
     own = context(environment)
     preflight_only = environment.get("CW_PREFLIGHT_ONLY", "false")
-    require(preflight_only in ("true", "false"))
+    repair_only = environment.get("CW_REPAIR_STALE_AUDIT_ONLY", "false")
+    require(preflight_only in ("true", "false") and repair_only in ("true", "false")
+        and not (preflight_only == "true" and repair_only == "true"))
     source_token, public_token = environment["CW_GATEWAY_OPERATOR_TOKEN"], environment["GH_PUBLIC_TOKEN"]
     print("CODE_GATEWAY_VERIFY_APPROVAL", flush=True)
     own_run = approval(call, public_token, own, int(clock()))
     print("CODE_GATEWAY_VERIFY_SOURCE_OFF_AND_UNUSED_BUDGET", flush=True)
-    source_preflight(call, source_token, own["CW_SOURCE_SHA"])
+    source_preflight(call, source_token, own["CW_SOURCE_SHA"], repair=repair_only == "true",
+        clock=clock, monotonic=monotonic, pause=pause)
+    if repair_only == "true":
+        return "CODE_GATEWAY_IDENTIFIED_AUDIT_TERMINATED_NO_DISPATCH_NO_SPEND"
     require(call(PUBLIC, "GET", "git/ref/heads/" + MARKER, public_token) is None)
     if preflight_only == "true":
         return "CODE_GATEWAY_PREFLIGHT_VERIFIED_NO_DISPATCH_NO_SPEND"

@@ -121,6 +121,81 @@ class Fixture:
 
 
 class GatewayTests(unittest.TestCase):
+    def repair_fixture(self):
+        f = Fixture()
+        f.source_sha = gateway.STALE_AUDIT_SHA
+        f.environment.update(CW_SOURCE_SHA=f.source_sha, CW_PREFLIGHT_ONLY="false",
+                             CW_REPAIR_STALE_AUDIT_ONLY="true")
+        f.audit = f.run(int(gateway.STALE_AUDIT_RUN), gateway.SOURCE, gateway.SOURCE_ID,
+                        f.source_sha, gateway.BRANCH, gateway.CONTROLLER)
+        f.audit.update(event="push", display_title="CW issue129 audit 0",
+            created_at=dt.datetime.fromtimestamp(f.now - 3600, dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+        f.audit_jobs = [{"id": gateway.STALE_AUDIT_JOB, "name": "control", "status": "completed",
+            "conclusion": "failure", "steps": [{"name": "Audit or admit via original authenticated native publisher",
+                "status": "completed", "conclusion": "failure"}]}]
+        original = f.call
+
+        def call(repository, method, path, token, body=None):
+            audit_path = "actions/runs/" + gateway.STALE_AUDIT_RUN
+            if repository == gateway.SOURCE and path in (audit_path, audit_path + "/jobs?per_page=50", gateway.STALE_AUDIT_CANCEL):
+                f.calls.append((repository, method, path, copy.deepcopy(body)))
+                if method == "GET" and path == audit_path:
+                    return copy.deepcopy(f.audit)
+                if method == "GET":
+                    return {"jobs": copy.deepcopy(f.audit_jobs)}
+                if getattr(f, "cancel_unknown", False):
+                    raise ValueError("synthetic uncertain cancellation")
+                if not getattr(f, "cancel_stays_active", False):
+                    f.audit.update(status="completed", conclusion="cancelled")
+                return None
+            result = original(repository, method, path, token, body)
+            if repository == gateway.SOURCE and path == "actions/workflows/" + gateway.CONTROLLER + "/runs?per_page=50":
+                result["workflow_runs"].append(copy.deepcopy(f.audit))
+            return result
+
+        f.call = call
+        return f
+
+    def test_repair_only_terminates_identified_failed_audit_and_never_dispatches(self):
+        f = self.repair_fixture()
+        self.assertEqual(f.execute(), "CODE_GATEWAY_IDENTIFIED_AUDIT_TERMINATED_NO_DISPATCH_NO_SPEND")
+        writes = [c for c in f.calls if c[1] != "GET"]
+        self.assertEqual(writes, [(gateway.SOURCE, "POST", gateway.STALE_AUDIT_CANCEL, None)])
+        self.assertEqual(list(f.gates.values()), ["false", "false"])
+        self.assertIsNone(f.marker)
+        self.assertIsNone(f.lease)
+        self.assertFalse(f.dispatched)
+        self.assertFalse(f.watching)
+
+    def test_repair_refuses_any_active_job_identity_drift_enabled_gate_or_used_budget(self):
+        mutations = [lambda f: f.audit_jobs[0].update(status="in_progress"),
+            lambda f: f.audit_jobs[0].update(id=123),
+            lambda f: f.audit_jobs[0]["steps"][0].update(status="in_progress"),
+            lambda f: f.audit.update(head_sha="d" * 40),
+            lambda f: f.audit.update(event="workflow_dispatch"),
+            lambda f: f.audit.update(run_attempt=2),
+            lambda f: f.audit["actor"].update(id=123),
+            lambda f: f.audit.update(created_at=f.source_run["created_at"]),
+            lambda f: f.gates.update({gateway.CODE: "true"}),
+            lambda f: f.budget.update(revision=1, entries=[{}]),
+            lambda f: f.environment.update(CW_PREFLIGHT_ONLY="true")]
+        for mutate in mutations:
+            f = self.repair_fixture()
+            mutate(f)
+            with self.assertRaises(Exception):
+                f.execute()
+            self.assertTrue(all(c[1] == "GET" for c in f.calls))
+
+    def test_uncertain_audit_cancel_is_never_repeated_or_followed_by_dispatch(self):
+        for failure in ("cancel_unknown", "cancel_stays_active"):
+            f = self.repair_fixture()
+            setattr(f, failure, True)
+            with self.assertRaises(Exception):
+                f.execute()
+            self.assertEqual([c[2] for c in f.calls if c[1] != "GET"], [gateway.STALE_AUDIT_CANCEL])
+            self.assertIsNone(f.marker)
+            self.assertFalse(f.dispatched)
+
     def test_read_only_preflight_never_creates_marker_lease_dispatch_or_enables(self):
         f = Fixture()
         f.environment["CW_PREFLIGHT_ONLY"] = "true"
