@@ -1,0 +1,57 @@
+name: One bounded native code package
+run-name: CW issue129 code ${{ inputs.work_id || 'package-check' }}
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact reviewed current private source SHA
+        required: true
+        type: string
+      work_id:
+        description: Exact authenticated Code Work digest
+        required: true
+        type: string
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - .github/workflows/code-gateway.yml
+      - code_gateway.py
+      - test_code_gateway.py
+      - orchestrator_code_lease.py
+permissions: {}
+jobs:
+  package-check:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - run: python3 -m unittest -v test_code_gateway test_orchestrator_code_lease test_gateway_off_policy
+  code:
+    if: github.event_name == 'workflow_dispatch' && github.repository == '1978serg-cpu/cw-execution-approvals' && github.repository_id == '1428447847' && github.ref == 'refs/heads/main' && github.actor_id == '344015223' && github.run_attempt == 1
+    environment: paid-one-shot
+    runs-on: ubuntu-24.04
+    timeout-minutes: 22
+    permissions:
+      contents: write
+      actions: write
+    concurrency:
+      group: cw-issue129-one-code-package
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Issue finite lease, arm independent OFF, dispatch once, verify OFF at exit
+        env:
+          GH_PUBLIC_TOKEN: ${{ github.token }}
+          CW_GATEWAY_OPERATOR_TOKEN: ${{ secrets.CW_GATEWAY_OPERATOR_TOKEN }}
+          CW_SOURCE_SHA: ${{ inputs.source_sha }}
+          CW_WORK_ID: ${{ inputs.work_id }}
+        run: python3 code_gateway.py
