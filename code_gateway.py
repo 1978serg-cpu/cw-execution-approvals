@@ -4,6 +4,7 @@ The native source controller selects/verifies the immutable Work and preserves
 the original scheduler, credential validator and native Result channel.
 """
 import base64
+import hashlib
 import json
 import os
 import re
@@ -21,11 +22,16 @@ BRANCH = "feature/emergency-close-persistence"
 CONTROLLER = "orchestrator-code-controller.yml"
 WATCHDOG = "one-shot-gateway.yml"
 ORIGINAL_MARKER = "cw-issue129-code-package-consumed"
-MARKER = "cw-issue129-code-recovery1-consumed"
+RECOVERY1_MARKER = "cw-issue129-code-recovery1-consumed"
+MARKER = "cw-issue129-code-recovery2-consumed"
 ORIGINAL_PUBLIC_SHA = "ca40f15b187935a7ed001b161a9fae4263cd55e0"
 ORIGINAL_SOURCE_SHA = "0ce91af5f558942e271d06416eb14ded9a99142a"
 ORIGINAL_WORK_ID = "ba394f0b88edbc372f360496990d02fa77b8d33f587ec9f051a20822b1249c1c"
-RECOVERY_WORK_ID = "078fc14324d2bbd501e38c8b6641e0f1f4ae0bac6ada8db0d63f9a996e391691"
+RECOVERY1_WORK_ID = "078fc14324d2bbd501e38c8b6641e0f1f4ae0bac6ada8db0d63f9a996e391691"
+RECOVERY1_PUBLIC_SHA = "0bd469c8586ec3d05ee06ee9c1fe56d4cc8cc877"
+RECOVERY1_SOURCE_SHA = "c016d16a2f5ee01d7d8dba169c663ca5f030724f"
+RECOVERY_WORK_ID = "df442f6a440d52a3533ccbda0c20671ab54259f54ff481b5cfba2970594b88c5"
+RETAINED_BUDGET_SHA256 = "1c1c9844b2952285b94d3eb495dad300c35290e551165750a1d46dd8cba3ac57"
 LIVE = ("requested", "queued", "in_progress", "waiting", "pending")
 # GitHub's bounded 50-run listing includes repository/user metadata per row.
 # Keep a finite byte ceiling while allowing the real listing (~700 KiB).
@@ -81,7 +87,7 @@ def context(environment):
         require(re.fullmatch("[a-f0-9]{40}", values[name]))
     require(re.fullmatch("[a-f0-9]{64}", values["CW_WORK_ID"])
             and values["CW_WORK_ID"] == RECOVERY_WORK_ID
-            and values["CW_SOURCE_SHA"] != ORIGINAL_SOURCE_SHA
+            and values["CW_SOURCE_SHA"] not in (ORIGINAL_SOURCE_SHA, RECOVERY1_SOURCE_SHA)
             and re.fullmatch("[1-9][0-9]{0,19}", values["GITHUB_RUN_ID"]))
     return values
 
@@ -101,12 +107,12 @@ def source_preflight(call, token, source_sha):
     require(tip.get("object", {}).get("sha") == source_sha)
     print("CODE_GATEWAY_READ_BOTH_OFF_FLAGS", flush=True)
     require(all(read_gate(call, token, name) == "false" for name in (PAID, CODE)))
-    print("CODE_GATEWAY_READ_UNUSED_PACKAGE_BUDGET", flush=True)
+    print("CODE_GATEWAY_READ_RETAINED_PACKAGE_BUDGET", flush=True)
     file = call(SOURCE, "GET", "contents/package-budget.json?ref=cw-issue129-budget", token)
     require(file.get("type") == "file" and file.get("encoding") == "base64" and file.get("size", 999999) <= 65536)
     budget = json.loads(base64.b64decode(file["content"], validate=False), object_pairs_hook=unique)
-    require(budget.get("package") == "issue129-20261022" and budget.get("cap_cents") == 1000
-            and budget.get("max_requests") == 10 and budget.get("revision") == 0 and budget.get("entries") == [])
+    require(hashlib.sha256(json.dumps(budget, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+            == RETAINED_BUDGET_SHA256)
     for workflow in (CONTROLLER, "gh-aw-code-worker.lock.yml", "gh-aw-worker-probe.lock.yml", "gh-aw-dispatcher-probe.lock.yml"):
         print("CODE_GATEWAY_CHECK_IDLE_" + workflow.replace(".yml", "").replace(".lock", "").replace("-", "_").upper(), flush=True)
         history = rows(call(SOURCE, "GET", "actions/workflows/" + workflow + "/runs?per_page=50", token), "workflow_runs")
@@ -114,15 +120,19 @@ def source_preflight(call, token, source_sha):
 
 
 def predecessor(call, source_token, public_token):
-    """Read positive terminal evidence; retain the consumed first-attempt marker.
+    """Read positive terminal evidence; retain both consumed attempt markers.
 
     The source controller independently authenticates the cancelled Claim and
     native Release before allowing the distinct successor Work to launch.
-    source_preflight has already required the SAME unused $10/10 ledger.
+    source_preflight requires the exact three-request $10/10 ledger, including
+    its CONSUMED/unknown outcome. Nothing refunds or replays that old request.
     """
     marker = call(PUBLIC, "GET", "git/ref/heads/" + ORIGINAL_MARKER, public_token)
     require(type(marker) is dict and marker.get("ref") == "refs/heads/" + ORIGINAL_MARKER
             and marker.get("object", {}).get("sha") == ORIGINAL_PUBLIC_SHA)
+    marker = call(PUBLIC, "GET", "git/ref/heads/" + RECOVERY1_MARKER, public_token)
+    require(type(marker) is dict and marker.get("ref") == "refs/heads/" + RECOVERY1_MARKER
+            and marker.get("object", {}).get("sha") == RECOVERY1_PUBLIC_SHA)
     expected = (
         (PUBLIC, PUBLIC_ID, public_token, "39840999602", ORIGINAL_PUBLIC_SHA, "main", "code-gateway.yml", OWNER_ID,
          "CW issue129 code " + ORIGINAL_WORK_ID),
@@ -131,6 +141,13 @@ def predecessor(call, source_token, public_token):
         (SOURCE, SOURCE_ID, source_token, "39841262708", ORIGINAL_SOURCE_SHA,
          "gh-aw/work-queue/" + ORIGINAL_SOURCE_SHA, "gh-aw-code-worker.lock.yml", 41898282,
          "gh-aw work-queue d_ef8262a3e68600f48828dad443358ce5a9ac11d458fd935b078a1b2a965ac864_1"),
+        (PUBLIC, PUBLIC_ID, public_token, "39852724729", RECOVERY1_PUBLIC_SHA, "main", "code-gateway.yml", OWNER_ID,
+         "CW issue129 code " + RECOVERY1_WORK_ID),
+        (SOURCE, SOURCE_ID, source_token, "39852966443", RECOVERY1_SOURCE_SHA, BRANCH, CONTROLLER, OWNER_ID,
+         "CW issue129 launch " + RECOVERY1_WORK_ID),
+        (SOURCE, SOURCE_ID, source_token, "39853131813", RECOVERY1_SOURCE_SHA,
+         "gh-aw/work-queue/" + RECOVERY1_SOURCE_SHA, "gh-aw-code-worker.lock.yml", 41898282,
+         "gh-aw work-queue d_e62d9eeaf7d5fbbedaeb9d5dce8f22542b7a1f805558414125ab90d37e244e59_1"),
     )
     for repository, repository_id, token, run_id, sha, branch, workflow, actor, title in expected:
         run = call(repository, "GET", "actions/runs/" + run_id + "/attempts/1", token)
@@ -225,7 +242,7 @@ def execute(environment, *, call=api, clock=time.time, monotonic=time.monotonic,
     source_token, public_token = environment["CW_GATEWAY_OPERATOR_TOKEN"], environment["GH_PUBLIC_TOKEN"]
     print("CODE_GATEWAY_VERIFY_APPROVAL", flush=True)
     own_run = approval(call, public_token, own, int(clock()))
-    print("CODE_GATEWAY_VERIFY_SOURCE_OFF_AND_UNUSED_BUDGET", flush=True)
+    print("CODE_GATEWAY_VERIFY_SOURCE_OFF_AND_RETAINED_BUDGET", flush=True)
     source_preflight(call, source_token, own["CW_SOURCE_SHA"])
     print("CODE_GATEWAY_VERIFY_FIXED_TERMINAL_PREDECESSOR", flush=True)
     predecessor(call, source_token, public_token)
