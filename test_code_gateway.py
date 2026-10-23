@@ -285,6 +285,54 @@ class AcceleratedFixture(Fixture):
         return super().call(repository, method, path, token, body)
 
 
+class AcceleratedSuccessorFixture(AcceleratedFixture):
+    def __init__(self):
+        super().__init__()
+        self.work_id = gateway.ACCELERATED2_WORK; self.environment["CW_WORK_ID"] = self.work_id
+        self.public_run["display_title"] = "CW issue129 code " + self.work_id
+        self.source_run["display_title"] = "CW issue129 accelerated_launch " + self.work_id
+        self.first_consumed = {"ref": "refs/heads/" + gateway.ACCELERATED_MARKER,
+            "object": {"sha": gateway.ACCELERATED1_PUBLIC}}
+        for repository, repository_id, run_id, sha, branch, workflow, actor, title, conclusion in (
+            (gateway.PUBLIC, gateway.PUBLIC_ID, "39883821037", gateway.ACCELERATED1_PUBLIC, "main", "code-gateway.yml", gateway.OWNER_ID,
+             "CW issue129 code " + gateway.ACCELERATED_WORK, "cancelled"),
+            (gateway.SOURCE, gateway.SOURCE_ID, "39883932232", gateway.ACCELERATED1_SOURCE, gateway.BRANCH, gateway.CONTROLLER, gateway.OWNER_ID,
+             "CW issue129 accelerated_launch " + gateway.ACCELERATED_WORK, "failure"),
+            (gateway.SOURCE, gateway.SOURCE_ID, "39884029905", gateway.ACCELERATED1_SOURCE, "gh-aw/work-queue/" + gateway.ACCELERATED1_SOURCE,
+             "gh-aw-code-worker.lock.yml", 41898282,
+             "gh-aw work-queue d_28d184129b57493ba0a57d3e81ca083da9b843ca455d90954c0578f935c9184e_1", "cancelled"),
+        ):
+            run = self.run(int(run_id), repository, repository_id, sha, branch, workflow)
+            run.update(status="completed", conclusion=conclusion, display_title=title,
+                actor={"id": actor}, triggering_actor={"id": actor}); self.previous[run_id] = run
+
+    def call(self, repository, method, path, token, body=None):
+        if repository == gateway.PUBLIC and method == "GET" and path in (
+                "git/ref/heads/" + gateway.ACCELERATED_MARKER, "git/ref/heads/" + gateway.ACCELERATED2_MARKER):
+            self.calls.append((repository, method, path, copy.deepcopy(body)))
+            return copy.deepcopy(self.first_consumed if path.endswith(gateway.ACCELERATED_MARKER) else self.marker)
+        return super().call(repository, method, path, token, body)
+
+
+class AcceleratedSuccessorTests(unittest.TestCase):
+    def test_distinct_successor_preserves_the_first_consumption_marker_and_same_unused_package(self):
+        f = AcceleratedSuccessorFixture(); marker = copy.deepcopy(f.first_consumed); budget = copy.deepcopy(f.accelerated_budget)
+        self.assertEqual(f.execute(), "CODE_CONTROLLER_COMPLETED_NATIVE_RESULT_REQUIRES_READBACK")
+        self.assertEqual(f.marker["ref"], "refs/heads/" + gateway.ACCELERATED2_MARKER)
+        self.assertEqual(f.first_consumed, marker); self.assertEqual(f.accelerated_budget, budget)
+        self.assertEqual(json.loads(f.lease)["max_requests"], 100)
+        self.assertEqual(list(f.gates.values()), ["false", "false"])
+
+    def test_successor_requires_exact_cancelled_run_and_unmodified_attempt_marker(self):
+        for mutate in (lambda f: setattr(f, "first_consumed", None),
+                       lambda f: f.previous["39884029905"].update(conclusion="failure"),
+                       lambda f: f.previous["39884029905"].update(head_sha="c" * 40),
+                       lambda f: f.accelerated_budget.update(entries=[{}])):
+            f = AcceleratedSuccessorFixture(); mutate(f)
+            with self.assertRaises(Exception): f.execute()
+            self.assertTrue(all(c[1] == "GET" for c in f.calls))
+
+
 class AcceleratedGatewayTests(unittest.TestCase):
     def test_new_package_keeps_all_old_markers_and_issues_only_the_new_bounded_lease(self):
         f = AcceleratedFixture(); before = copy.deepcopy(f.recovery3_marker)
