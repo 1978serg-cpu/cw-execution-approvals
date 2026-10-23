@@ -242,6 +242,93 @@ class Fixture:
             monotonic=lambda: self.now, pause=self.pause)
 
 
+class AcceleratedFixture(Fixture):
+    def __init__(self):
+        super().__init__()
+        self.work_id = gateway.ACCELERATED_WORK
+        self.environment["CW_WORK_ID"] = self.work_id
+        self.public_run["display_title"] = "CW issue129 code " + self.work_id
+        self.source_run["display_title"] = "CW issue129 accelerated_launch " + self.work_id
+        self.accelerated_budget = {"version": 2, "package": gateway.ACCELERATED_PACKAGE,
+            "cap_cents": 5000, "max_requests": 100, "revision": 0, "entries": [], "transition_id": "a" * 32}
+        self.original_head = gateway.RETAINED_FINAL_HEAD
+        self.recovery3_marker = {"ref": "refs/heads/" + gateway.MARKER, "object": {"sha": gateway.RECOVERY3_PUBLIC}}
+        for repository, repository_id, run_id, sha, branch, workflow, actor, title in (
+            (gateway.PUBLIC, gateway.PUBLIC_ID, "39877788233", gateway.RECOVERY3_PUBLIC, "main", "code-gateway.yml", gateway.OWNER_ID,
+             "CW issue129 code " + gateway.RECOVERY_WORK_ID),
+            (gateway.SOURCE, gateway.SOURCE_ID, "39877875874", gateway.RECOVERY3_SOURCE, gateway.BRANCH, gateway.CONTROLLER, gateway.OWNER_ID,
+             "CW issue129 launch " + gateway.RECOVERY_WORK_ID),
+            (gateway.SOURCE, gateway.SOURCE_ID, "39877972752", gateway.RECOVERY3_SOURCE, "gh-aw/work-queue/" + gateway.RECOVERY3_SOURCE,
+             "gh-aw-code-worker.lock.yml", 41898282,
+             "gh-aw work-queue d_3f8f143cf17f300c2f5859459fdfc046958c8037f701e33ca50fb8957aaa0602_1"),
+        ):
+            run = self.run(int(run_id), repository, repository_id, sha, branch, workflow)
+            run.update(status="completed", conclusion="failure", display_title=title,
+                actor={"id": actor}, triggering_actor={"id": actor})
+            self.previous[run_id] = run
+
+    def call(self, repository, method, path, token, body=None):
+        value = NotImplemented
+        if method == "GET":
+            if repository == gateway.SOURCE and path == "git/ref/heads/cw-issue129-budget":
+                value = {"ref": "refs/heads/cw-issue129-budget", "object": {"sha": self.original_head}}
+            if repository == gateway.SOURCE and path == "contents/package-budget.json?ref=cw-issue129-accelerated-budget":
+                raw = json.dumps(self.accelerated_budget).encode()
+                value = {"type": "file", "encoding": "base64", "size": len(raw), "content": base64.b64encode(raw).decode()}
+            if repository == gateway.PUBLIC and path == "git/ref/heads/" + gateway.MARKER:
+                value = self.recovery3_marker
+            if repository == gateway.PUBLIC and path == "git/ref/heads/" + gateway.ACCELERATED_MARKER:
+                value = self.marker
+        if value is not NotImplemented:
+            self.calls.append((repository, method, path, copy.deepcopy(body)))
+            return copy.deepcopy(value)
+        return super().call(repository, method, path, token, body)
+
+
+class AcceleratedGatewayTests(unittest.TestCase):
+    def test_new_package_keeps_all_old_markers_and_issues_only_the_new_bounded_lease(self):
+        f = AcceleratedFixture(); before = copy.deepcopy(f.recovery3_marker)
+        self.assertEqual(f.execute(), "CODE_CONTROLLER_COMPLETED_NATIVE_RESULT_REQUIRES_READBACK")
+        self.assertEqual(f.recovery3_marker, before)
+        self.assertEqual(f.original_head, gateway.RETAINED_FINAL_HEAD)
+        lease = json.loads(f.lease)
+        self.assertEqual((lease["package"], lease["cap_cents"], lease["max_requests"]),
+            (gateway.ACCELERATED_PACKAGE, 5000, 100))
+        dispatches = [c for c in f.calls if c[0] == gateway.SOURCE and c[1] == "POST" and c[2].endswith("/dispatches")]
+        self.assertEqual(len(dispatches), 1)
+        self.assertEqual(dispatches[0][3]["inputs"]["mode"], "accelerated_launch")
+        self.assertEqual(f.marker["ref"], "refs/heads/" + gateway.ACCELERATED_MARKER)
+        self.assertEqual(list(f.gates.values()), ["false", "false"])
+        with self.assertRaises(Exception): f.execute()
+        self.assertEqual(len([c for c in f.calls if c[0] == gateway.SOURCE and c[1] == "POST" and c[2].endswith("/dispatches")]), 1)
+
+    def test_new_readiness_check_is_read_only(self):
+        f = AcceleratedFixture(); f.environment["CW_PREFLIGHT_ONLY"] = "true"
+        self.assertEqual(f.execute(), "CODE_GATEWAY_PREFLIGHT_VERIFIED_NO_DISPATCH_NO_SPEND")
+        self.assertTrue(all(c[1] == "GET" for c in f.calls))
+
+    def test_used_or_changed_new_budget_and_missing_terminal_evidence_never_dispatch(self):
+        changes = (lambda f: f.accelerated_budget.update(cap_cents=5001),
+            lambda f: f.accelerated_budget.update(max_requests=101),
+            lambda f: f.accelerated_budget.update(entries=[{}]),
+            lambda f: f.accelerated_budget.update(revision=1),
+            lambda f: setattr(f, "original_head", "c" * 40),
+            lambda f: setattr(f, "recovery3_marker", None),
+            lambda f: f.previous["39877972752"].update(status="in_progress", conclusion=None))
+        for mutate in changes:
+            with self.subTest(change=changes.index(mutate)):
+                f = AcceleratedFixture(); mutate(f)
+                with self.assertRaises(Exception): f.execute()
+                self.assertTrue(all(c[1] == "GET" for c in f.calls))
+
+    def test_unknown_dispatch_and_independent_watchdog_failure_leave_both_gates_off(self):
+        for change in (lambda f: setattr(f, "watch_ready", False), lambda f: setattr(f, "source_outcome", "failure")):
+            f = AcceleratedFixture(); change(f)
+            with self.assertRaises(Exception): f.execute()
+            self.assertEqual(list(f.gates.values()), ["false", "false"])
+            self.assertIsNotNone(f.marker)
+
+
 class GatewayTests(unittest.TestCase):
     def test_retained_unknown_request_cannot_be_refunded_relabelled_or_finalized(self):
         changes = (
@@ -461,3 +548,4 @@ class GatewayTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

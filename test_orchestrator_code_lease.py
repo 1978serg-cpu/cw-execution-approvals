@@ -221,5 +221,27 @@ class CodeLeaseTests(unittest.TestCase):
                 lease.source_parent(f.doc, f.source, now=NOW, source_sha=f.doc["source_sha"], work_id=f.doc["work_id"])
 
 
+class AcceleratedLeaseTests(unittest.TestCase):
+    def accelerated(self):
+        f = Fixture()
+        f.doc.update(package="issue129-20261022-accelerated", cap_cents=5000, max_requests=100)
+        return f
+
+    def test_new_package_uses_same_independent_terminal_parent_shutdown(self):
+        f = self.accelerated()
+        self.assertEqual(f.guard(), "CODE_LEASE_WITHIN_TTL")
+        f.after_pause = lambda: f.parent.update(status="completed")
+        self.assertEqual(f.watch(), "CODE_LEASE_TERMINAL_EXPIRED_OR_UNVERIFIABLE_OFF")
+        self.assertEqual(list(f.gates.values()), ["false", "false"])
+
+    def test_new_package_has_no_cap_or_request_or_expiry_override(self):
+        for change in ({"cap_cents": 5001}, {"max_requests": 101}, {"expires_at": NOW + 1201},
+                       {"package": "arbitrary"}, {"cap_cents": True}):
+            f = self.accelerated(); f.doc.update(change)
+            self.assertEqual(f.guard(), "CODE_ORPHAN_DISABLED")
+            self.assertEqual(list(f.gates.values()), ["false", "false"])
+
+
 if __name__ == "__main__":
     unittest.main()
+

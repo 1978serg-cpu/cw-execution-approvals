@@ -42,8 +42,7 @@ def decode(value, *, now):
     except Exception:
         raise LeaseDenied("CODE_LEASE_DENIED") from None
     require(type(lease) is dict and set(lease) == FIELDS)
-    require(type(lease["version"]) is int and lease["version"] == 1
-            and lease["package"] == "issue129-20261022")
+    require(type(lease["version"]) is int and lease["version"] == 1)
     for name, length in (("source_sha", 40), ("gateway_sha", 40), ("work_id", 64)):
         require(type(lease[name]) is str and re.fullmatch("[a-f0-9]{" + str(length) + "}", lease[name]))
     for name in ("controller_run_id", "gateway_run_id"):
@@ -51,8 +50,9 @@ def decode(value, *, now):
     require(type(lease["issued_at"]) is int and type(lease["expires_at"]) is int
             and 0 < lease["issued_at"] <= now < lease["expires_at"]
             and 0 < lease["expires_at"] - lease["issued_at"] <= TTL_SECONDS)
-    require(type(lease["cap_cents"]) is int and lease["cap_cents"] == 1000
-            and type(lease["max_requests"]) is int and lease["max_requests"] == 10)
+    require(type(lease["cap_cents"]) is int and type(lease["max_requests"]) is int
+            and (lease["package"], lease["cap_cents"], lease["max_requests"]) in (
+                ("issue129-20261022", 1000, 10), ("issue129-20261022-accelerated", 5000, 100)))
     return lease
 
 
@@ -182,3 +182,4 @@ def watch_code(api, token, public_token, *, parent_id, now, monotonic, pause, re
         pause(15)
     force_off(api, token)
     return "CODE_WATCHDOG_MONOTONIC_TTL_OFF"
+
