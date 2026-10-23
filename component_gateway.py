@@ -23,6 +23,17 @@ CHECKPOINT = "6059deec7553c7f2a665f1e24c2b4fcde92e4c89"
 BUDGET = "cw-issue129-accelerated-budget"
 SHA = re.compile("[a-f0-9]{40}")
 HASH = re.compile("[a-f0-9]{64}")
+# One audited pre-provider failure. The original marker is retained forever.
+# A changed queue/budget or any other order is ineligible for this recovery.
+PRELAUNCH_RECOVERY = {
+    "CW_SOURCE_SHA": "b6ef9aba11026e6cb189fba9afcf339b089b7d96",
+    "CW_APPROVAL_REF": "df2ca83e58dde8104e9f08f542909417f33c323c",
+    "CW_WORK_ORDER_SHA256": "249829acaa55d7e43277921bedc523a6883047a51f57676fc33c5121de9b8bbd",
+    "CW_SPEC_SHA256": "b0402134c9e14326760630b45f930768bbf83cd31efa4bb777601681da08baea",
+}
+PRELAUNCH_GATEWAY_SHA = "cadc6489b9190cdd7977a93f72cd6a088ca06055"
+PRELAUNCH_QUEUE_SHA = "452654213ec99acd94132c56b02f591cd6e88e78"
+PRELAUNCH_BUDGET_SHA = "e0a007bb0e41aabba259d4609d1e05d8ff21cc38"
 
 
 def canonical(value):
@@ -185,14 +196,47 @@ def arm_watchdog(call, token, own, *, clock, monotonic, pause):
     raise ValueError("COMPONENT_WATCHDOG_NOT_ARMED")
 
 
+def launch_marker(call, source_token, public_token, own):
+    name = "cw-component-" + own["CW_WORK_ORDER_SHA256"]
+    original = call(PUBLIC, "GET", "git/ref/heads/" + name, public_token)
+    if original is None:
+        return name
+    require(all(own.get(k) == v for k, v in PRELAUNCH_RECOVERY.items())
+        and original.get("object", {}).get("sha") == PRELAUNCH_GATEWAY_SHA)
+    for repository, token, run_id, repo_id, head, branch, workflow, title in (
+        (PUBLIC, public_token, 40018993718, lease.PUBLIC_ID, PRELAUNCH_GATEWAY_SHA, "main",
+         "component-gateway.yml", "CW component order "),
+        (SOURCE, source_token, 40019128698, lease.SOURCE_ID, own["CW_SOURCE_SHA"], lease.BRANCH,
+         CONTROLLER, "CW component controller "),
+    ):
+        run = call(repository, "GET", "actions/runs/" + str(run_id), token)
+        require(type(run) is dict and run.get("id") == run_id and run.get("status") == "completed"
+            and run.get("conclusion") == "failure" and run.get("run_attempt") == 1
+            and run.get("repository", {}).get("id") == repo_id
+            and run.get("repository", {}).get("full_name") == repository
+            and run.get("head_sha") == head and run.get("head_branch") == branch
+            and run.get("path") == ".github/workflows/" + workflow
+            and run.get("display_title") == title + own["CW_WORK_ORDER_SHA256"]
+            and run.get("event") == "workflow_dispatch"
+            and all(run.get(field, {}).get("id") == lease.OWNER_ID for field in ("actor", "triggering_actor")))
+    for branch, expected in (("work-queue", PRELAUNCH_QUEUE_SHA), (BUDGET, PRELAUNCH_BUDGET_SHA)):
+        ref = call(SOURCE, "GET", "git/ref/heads/" + branch, source_token)
+        require(type(ref) is dict and ref.get("object", {}).get("sha") == expected)
+    # Exact unchanged histories are mandatory, not merely a remaining balance.
+    # Private prepare independently requires all five Works available/attempts=0.
+    require(all(read_gate(call, source_token, gate) == "false" for gate in (lease.PAID, lease.CODE)))
+    name += "-prelaunch-recovery1"
+    require(call(PUBLIC, "GET", "git/ref/heads/" + name, public_token) is None)
+    return name
+
+
 def execute(env, *, call=api, clock=time.time, monotonic=time.monotonic, pause=time.sleep):
     own = context(env)
     source_token, public_token = own["CW_GATEWAY_OPERATOR_TOKEN"], own["GH_PUBLIC_TOKEN"]
     public_run = public_approval(call, public_token, own, int(clock()))
     if not source_preflight(call, source_token, own):
         return "COMPONENT_GATEWAY_BUDGET_BLOCKED_NO_DISPATCH_NO_SPEND"
-    marker_name = "cw-component-" + own["CW_WORK_ORDER_SHA256"]
-    require(call(PUBLIC, "GET", "git/ref/heads/" + marker_name, public_token) is None)
+    marker_name = launch_marker(call, source_token, public_token, own)
     if own["CW_PREFLIGHT_ONLY"] == "true":
         return "COMPONENT_GATEWAY_PREFLIGHT_VERIFIED_NO_DISPATCH_NO_SPEND"
     try:
