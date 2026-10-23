@@ -395,8 +395,9 @@ def approval(call, token, own, now):
     return run
 
 
-def discover(call, token, repository, workflow, title, sha, branch, started, *, clock, monotonic, pause, owner_required=True):
-    deadline = monotonic() + 75
+def discover(call, token, repository, workflow, title, sha, branch, started, *, clock, monotonic, pause, owner_required=True, timeout_seconds=75):
+    require(type(timeout_seconds) is int and 1 <= timeout_seconds <= 300)
+    deadline = monotonic() + timeout_seconds
     while monotonic() < deadline:
         history = rows(call(repository, "GET", "actions/workflows/" + workflow + "/runs?per_page=50", token), "workflow_runs")
         matches = [r for r in history if r.get("display_title") == title and r.get("head_sha") == sha
