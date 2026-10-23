@@ -918,5 +918,72 @@ class AcceleratedSeventhTests(unittest.TestCase):
             self.assertTrue(all(c[1] == "GET" for c in f.calls))
 
 
+class AcceleratedEighthFixture(AcceleratedSeventhFixture):
+    def __init__(self):
+        super().__init__()
+        self.work_id = gateway.ACCELERATED8_WORK; self.environment["CW_WORK_ID"] = self.work_id
+        self.public_run["display_title"] = "CW issue129 code " + self.work_id
+        self.source_run["display_title"] = "CW issue129 accelerated_launch " + self.work_id
+        self.seventh_consumed = {"ref": "refs/heads/" + gateway.ACCELERATED7_MARKER,
+            "object": {"sha": gateway.ACCELERATED7_PUBLIC}}
+        self.accelerated_head = gateway.RETAINED_ACCELERATED8_HEAD
+        self.accelerated_budget["entries"] += [
+            {"state": "FINALIZED", "settled_cents": 27, "ceiling_cents": 1100, "sequence": i}
+            for i in range(1, 10)]
+        self.accelerated_budget.update(revision=48)
+        self.synthetic_hash = hashlib.sha256(json.dumps(self.accelerated_budget, sort_keys=True,
+            separators=(",", ":"), ensure_ascii=True).encode()).hexdigest()
+        for repository, repository_id, run_id, sha, branch, workflow, actor, title in (
+            (gateway.PUBLIC, gateway.PUBLIC_ID, "39905633845", gateway.ACCELERATED7_PUBLIC, "main", "code-gateway.yml", gateway.OWNER_ID,
+             "CW issue129 code " + gateway.ACCELERATED7_WORK),
+            (gateway.SOURCE, gateway.SOURCE_ID, "39905741262", gateway.ACCELERATED7_SOURCE, gateway.BRANCH, gateway.CONTROLLER, gateway.OWNER_ID,
+             "CW issue129 accelerated_launch " + gateway.ACCELERATED7_WORK),
+            (gateway.SOURCE, gateway.SOURCE_ID, "39905830292", gateway.ACCELERATED7_SOURCE, "gh-aw/work-queue/" + gateway.ACCELERATED7_SOURCE,
+             "gh-aw-code-worker.lock.yml", 41898282,
+             "gh-aw work-queue d_ffd5219f2a873f02fc17927401c35d0ac64e3b7dee16505b21562ed0c40b5f74_1"),
+        ):
+            run = self.run(int(run_id), repository, repository_id, sha, branch, workflow)
+            run.update(status="completed", conclusion="failure", display_title=title,
+                actor={"id": actor}, triggering_actor={"id": actor}); self.previous[run_id] = run
+
+    def execute(self):
+        with mock.patch.object(gateway, "RETAINED_ACCELERATED8_SHA256", self.synthetic_hash):
+            return super().execute()
+
+    def call(self, repository, method, path, token, body=None):
+        if repository == gateway.PUBLIC and method == "GET" and path in (
+                "git/ref/heads/" + gateway.ACCELERATED7_MARKER, "git/ref/heads/" + gateway.ACCELERATED8_MARKER):
+            self.calls.append((repository, method, path, copy.deepcopy(body)))
+            return copy.deepcopy(self.seventh_consumed if path.endswith(gateway.ACCELERATED7_MARKER) else self.marker)
+        return super().call(repository, method, path, token, body)
+
+
+class AcceleratedEighthTests(unittest.TestCase):
+    def test_retains_eighteen_records_and_seventh_marker_without_claiming_native_result(self):
+        f = AcceleratedEighthFixture(); budget = copy.deepcopy(f.accelerated_budget)
+        marker = copy.deepcopy(f.seventh_consumed)
+        self.assertEqual(f.execute(), "CODE_CONTROLLER_COMPLETED_NATIVE_RESULT_REQUIRES_READBACK")
+        self.assertEqual(f.marker["ref"], "refs/heads/" + gateway.ACCELERATED8_MARKER)
+        self.assertEqual(f.accelerated_budget, budget); self.assertEqual(len(budget["entries"]), 18)
+        self.assertEqual(f.seventh_consumed, marker)
+        issued = json.loads(f.lease)
+        self.assertEqual((issued["cap_cents"], issued["max_requests"]), (7000, 100))
+        self.assertEqual(list(f.gates.values()), ["false", "false"])
+
+    def test_rejects_changed_history_before_writes(self):
+        for mutate in (lambda f: setattr(f, "seventh_consumed", None),
+                       lambda f: f.accelerated_budget["entries"].pop(),
+                       lambda f: f.accelerated_budget["entries"][17].update(settled_cents=0),
+                       lambda f: setattr(f, "accelerated_head", "a" * 40),
+                       lambda f: f.accelerated_budget.update(cap_cents=7001),
+                       lambda f: f.environment.update(CW_SOURCE_SHA=gateway.ACCELERATED7_SOURCE),
+                       lambda f: f.previous["39905633845"].update(conclusion="success"),
+                       lambda f: f.previous["39905741262"].update(status="in_progress"),
+                       lambda f: f.previous["39905830292"].update(conclusion="success")):
+            f = AcceleratedEighthFixture(); mutate(f)
+            with self.assertRaises(Exception): f.execute()
+            self.assertTrue(all(c[1] == "GET" for c in f.calls))
+
+
 if __name__ == "__main__":
     unittest.main()
