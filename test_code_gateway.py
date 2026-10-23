@@ -594,6 +594,58 @@ class GatewayTests(unittest.TestCase):
             self.assertEqual(sum(c[0] == gateway.SOURCE and c[1] == "POST" and c[2].endswith("/dispatches") for c in f.calls), 1)
 
 
+
+
+
+class AcceleratedThirdFixture(AcceleratedSuccessorFixture):
+    def __init__(self):
+        super().__init__()
+        self.work_id = gateway.ACCELERATED3_WORK; self.environment["CW_WORK_ID"] = self.work_id
+        self.public_run["display_title"] = "CW issue129 code " + self.work_id
+        self.source_run["display_title"] = "CW issue129 accelerated_launch " + self.work_id
+        self.second_consumed = {"ref": "refs/heads/" + gateway.ACCELERATED2_MARKER,
+            "object": {"sha": gateway.ACCELERATED2_PUBLIC}}
+        for repository, repository_id, run_id, sha, branch, workflow, actor, title, conclusion in (
+            (gateway.PUBLIC, gateway.PUBLIC_ID, "39888458959", gateway.ACCELERATED2_PUBLIC, "main", "code-gateway.yml", gateway.OWNER_ID,
+             "CW issue129 code " + gateway.ACCELERATED2_WORK, "failure"),
+            (gateway.SOURCE, gateway.SOURCE_ID, "39888573669", gateway.ACCELERATED2_SOURCE, gateway.BRANCH, gateway.CONTROLLER, gateway.OWNER_ID,
+             "CW issue129 accelerated_launch " + gateway.ACCELERATED2_WORK, "failure"),
+            (gateway.SOURCE, gateway.SOURCE_ID, "39888673546", gateway.ACCELERATED2_SOURCE, "gh-aw/work-queue/" + gateway.ACCELERATED2_SOURCE,
+             "gh-aw-code-worker.lock.yml", 41898282,
+             "gh-aw work-queue d_30cce43ff67fc2fbb7a973647eec6879d050ac5f5444473f9c03346cbc6746cd_1", "cancelled"),
+        ):
+            run = self.run(int(run_id), repository, repository_id, sha, branch, workflow)
+            run.update(status="completed", conclusion=conclusion, display_title=title,
+                actor={"id": actor}, triggering_actor={"id": actor}); self.previous[run_id] = run
+
+    def call(self, repository, method, path, token, body=None):
+        if repository == gateway.PUBLIC and method == "GET" and path in (
+                "git/ref/heads/" + gateway.ACCELERATED2_MARKER, "git/ref/heads/" + gateway.ACCELERATED3_MARKER):
+            self.calls.append((repository, method, path, copy.deepcopy(body)))
+            return copy.deepcopy(self.second_consumed if path.endswith(gateway.ACCELERATED2_MARKER) else self.marker)
+        return super().call(repository, method, path, token, body)
+
+
+class AcceleratedThirdTests(unittest.TestCase):
+    def test_third_work_requires_both_old_markers_and_uses_the_same_unused_package(self):
+        f = AcceleratedThirdFixture(); first = copy.deepcopy(f.first_consumed); second = copy.deepcopy(f.second_consumed)
+        budget = copy.deepcopy(f.accelerated_budget)
+        self.assertEqual(f.execute(), "CODE_CONTROLLER_COMPLETED_NATIVE_RESULT_REQUIRES_READBACK")
+        self.assertEqual(f.marker["ref"], "refs/heads/" + gateway.ACCELERATED3_MARKER)
+        self.assertEqual(f.first_consumed, first); self.assertEqual(f.second_consumed, second)
+        self.assertEqual(f.accelerated_budget, budget)
+        self.assertEqual(list(f.gates.values()), ["false", "false"])
+
+    def test_third_work_denies_mutated_predecessor_or_any_budget_use(self):
+        for mutate in (lambda f: setattr(f, "second_consumed", None),
+                       lambda f: f.previous["39888673546"].update(conclusion="failure"),
+                       lambda f: f.previous["39888573669"].update(status="in_progress"),
+                       lambda f: f.accelerated_budget.update(entries=[{}]),
+                       lambda f: f.environment.update(CW_SOURCE_SHA=gateway.ACCELERATED2_SOURCE)):
+            f = AcceleratedThirdFixture(); mutate(f)
+            with self.assertRaises(Exception): f.execute()
+            self.assertTrue(all(c[1] == "GET" for c in f.calls))
+
+
 if __name__ == "__main__":
     unittest.main()
-
