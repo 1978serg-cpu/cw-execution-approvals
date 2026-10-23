@@ -173,6 +173,59 @@ class ComponentGatewayTests(unittest.TestCase):
         with patch.object(gateway, "source_preflight", return_value=True), self.assertRaises(Exception): f.execute()
         self.assertTrue(all(method == "GET" for _, method, _, _ in f.calls))
 
+    def recovery(self):
+        f = Fixture()
+        f.env.update(gateway.PRELAUNCH_RECOVERY)
+        original = "git/ref/heads/cw-component-" + f.env["CW_WORK_ORDER_SHA256"]
+        f.markers[original] = {"object": {"sha": gateway.PRELAUNCH_GATEWAY_SHA}}
+        proofs = {}
+        for repo, old, identifier, sha, title in (
+            (lease.PUBLIC, f.public, 40018993718, gateway.PRELAUNCH_GATEWAY_SHA, "CW component order "),
+            (lease.SOURCE, f.source, 40019128698, f.env["CW_SOURCE_SHA"], "CW component controller "),
+        ):
+            proofs[(repo, "actions/runs/" + str(identifier))] = dict(old, id=identifier, head_sha=sha,
+                display_title=title + f.env["CW_WORK_ORDER_SHA256"], status="completed", conclusion="failure")
+        proofs[(lease.SOURCE, "git/ref/heads/work-queue")] = {"object": {"sha": gateway.PRELAUNCH_QUEUE_SHA}}
+        proofs[(lease.SOURCE, "git/ref/heads/" + gateway.BUDGET)] = {"object": {"sha": gateway.PRELAUNCH_BUDGET_SHA}}
+        def call(repo, method, path, token, body=None):
+            if (repo, path) in proofs:
+                self.assertEqual(method, "GET")
+                return copy.deepcopy(proofs[(repo, path)])
+            return f.api(repo, method, path, token, body)
+        return f, proofs, call, original
+
+    def test_audited_prelaunch_recovery_retains_history_and_is_single_use(self):
+        f, _, call, original = self.recovery()
+        before = copy.deepcopy(f.markers)
+        name = gateway.launch_marker(call, "source-test-token", "public-test-token", f.env)
+        self.assertEqual(name, original.removeprefix("git/ref/heads/") + "-prelaunch-recovery1")
+        self.assertEqual(f.markers, before)
+        self.assertTrue(all(method == "GET" for _, method, _, _ in f.calls))
+        f.markers["git/ref/heads/" + name] = {"object": {"sha": f.env["GITHUB_SHA"]}}
+        with self.assertRaises(Exception):
+            gateway.launch_marker(call, "source-test-token", "public-test-token", f.env)
+        self.assertEqual(f.markers[original], before[original])
+
+    def test_recovery_rejects_any_changed_history_identity_order_or_gate(self):
+        for damage in ("queue", "budget", "active", "successful", "attempt", "actor", "source", "order", "marker", "gate", "unknown"):
+            f, proofs, call, original = self.recovery()
+            private = proofs[(lease.SOURCE, "actions/runs/40019128698")]
+            if damage in ("queue", "budget"):
+                branch = "work-queue" if damage == "queue" else gateway.BUDGET
+                proofs[(lease.SOURCE, "git/ref/heads/" + branch)]["object"]["sha"] = "0" * 40
+            if damage == "active": private["status"] = "in_progress"
+            if damage == "successful": private["conclusion"] = "success"
+            if damage == "attempt": private["run_attempt"] = 2
+            if damage == "actor": private["actor"] = {"id": 1}
+            if damage == "source": private["head_sha"] = "0" * 40
+            if damage == "order": f.env["CW_APPROVAL_REF"] = "0" * 40
+            if damage == "marker": f.markers[original]["object"]["sha"] = "0" * 40
+            if damage == "gate": f.gates[lease.PAID] = "true"
+            if damage == "unknown": proofs[(lease.SOURCE, "actions/runs/40019128698")] = None
+            with self.subTest(damage=damage), self.assertRaises(Exception):
+                gateway.launch_marker(call, "source-test-token", "public-test-token", f.env)
+            self.assertTrue(all(method == "GET" for _, method, _, _ in f.calls))
+
 
 if __name__ == "__main__":
     unittest.main()
