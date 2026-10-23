@@ -47,15 +47,54 @@ RETAINED_BUDGET = json.loads('''{
       "sequence": 3,
       "state": "CONSUMED",
       "work_id": "078fc14324d2bbd501e38c8b6641e0f1f4ae0bac6ada8db0d63f9a996e391691"
+    },
+    {
+      "ceiling_cents": 100,
+      "phase": "worker",
+      "request_id": "200b125da62dac1a14c566bbf8e8a73e71d5abb846e22b4a540874bb4eef80b6",
+      "request_sha256": "969d3fe32391d6f2aa6ee8f2838cee933b0ab100cfdba09bd576f34c2835f778",
+      "response_sha256": "9665e70d1ecf02b4d6c681b935127f0bfc5bf5e35892d78a25bbd1d58d8dbaec",
+      "sequence": 1,
+      "state": "FINALIZED",
+      "work_id": "df442f6a440d52a3533ccbda0c20671ab54259f54ff481b5cfba2970594b88c5"
+    },
+    {
+      "ceiling_cents": 100,
+      "phase": "worker",
+      "request_id": "f7ad247a7f4b693542457894551c29e018d2859c05fa5cd5656f88a5540aebe8",
+      "request_sha256": "fddf57e26c790021515efe5dd859af2148a9e0552c435ec68fb39ddb9ab43ca2",
+      "response_sha256": "7e9fc63eb306a1c45ef6a8dea80865f2a584de5c95b0b46f97b732040d6fffee",
+      "sequence": 2,
+      "state": "FINALIZED",
+      "work_id": "df442f6a440d52a3533ccbda0c20671ab54259f54ff481b5cfba2970594b88c5"
+    },
+    {
+      "ceiling_cents": 100,
+      "phase": "worker",
+      "request_id": "294e9df9d4cc850d143d280fe7de8ae681c9b0066d18b2f2ae264b15c25dc8f3",
+      "request_sha256": "abdb381e4dc513da0bdd4f710f5437b3aa3b54fbe143df83c2a3f629fa0bea32",
+      "response_sha256": "8e2cc25a006dd7f113c495bf82d78b76f726f0af6f78f9b7d8f5584d95f999cb",
+      "sequence": 3,
+      "state": "FINALIZED",
+      "work_id": "df442f6a440d52a3533ccbda0c20671ab54259f54ff481b5cfba2970594b88c5"
+    },
+    {
+      "ceiling_cents": 100,
+      "phase": "worker",
+      "request_id": "d293430e20e834f5537f81eebc581b4037cc0acffa8b7fe45c57ac5a499b6dd1",
+      "request_sha256": "c79887a29aca22e102fae718f4353f4a27daa5dbad4ccb6932d6bdea0883542c",
+      "response_sha256": "503854b36e96a7845b90619303c28cee4025a4bb88944fbb0fefbd2f46aee4eb",
+      "sequence": 4,
+      "state": "FINALIZED",
+      "work_id": "df442f6a440d52a3533ccbda0c20671ab54259f54ff481b5cfba2970594b88c5"
     }
   ],
   "max_requests": 10,
   "package": "issue129-20261022",
-  "revision": 8,
-  "transition_id": "4e11673949f0a78ff26c5ee660265d40",
+  "revision": 20,
+  "transition_id": "66fe7979c30145a82956c7f8e70a72d4",
   "version": 2
-}
-''')
+}''')
 
 
 class Fixture:
@@ -91,6 +130,8 @@ class Fixture:
             "object": {"sha": gateway.ORIGINAL_PUBLIC_SHA}}
         self.recovery1_marker = {"ref": "refs/heads/" + gateway.RECOVERY1_MARKER,
             "object": {"sha": gateway.RECOVERY1_PUBLIC_SHA}}
+        self.recovery2_marker = {"ref": "refs/heads/" + gateway.RECOVERY2_MARKER,
+            "object": {"sha": gateway.RECOVERY2_PUBLIC_SHA}}
         self.previous = {}
         for repository, repository_id, run_id, sha, branch, workflow, actor, title in (
             (gateway.PUBLIC, gateway.PUBLIC_ID, "39840999602", gateway.ORIGINAL_PUBLIC_SHA, "main", "code-gateway.yml",
@@ -106,7 +147,14 @@ class Fixture:
              gateway.OWNER_ID, "CW issue129 launch " + gateway.RECOVERY1_WORK_ID),
             (gateway.SOURCE, gateway.SOURCE_ID, "39853131813", gateway.RECOVERY1_SOURCE_SHA,
              "gh-aw/work-queue/" + gateway.RECOVERY1_SOURCE_SHA, "gh-aw-code-worker.lock.yml", 41898282,
-             "gh-aw work-queue d_e62d9eeaf7d5fbbedaeb9d5dce8f22542b7a1f805558414125ab90d37e244e59_1")):
+             "gh-aw work-queue d_e62d9eeaf7d5fbbedaeb9d5dce8f22542b7a1f805558414125ab90d37e244e59_1"),
+            (gateway.PUBLIC, gateway.PUBLIC_ID, "39870019362", gateway.RECOVERY2_PUBLIC_SHA, "main", "code-gateway.yml",
+             gateway.OWNER_ID, "CW issue129 code " + gateway.RECOVERY2_WORK_ID),
+            (gateway.SOURCE, gateway.SOURCE_ID, "39870151844", gateway.RECOVERY2_SOURCE_SHA, gateway.BRANCH, gateway.CONTROLLER,
+             gateway.OWNER_ID, "CW issue129 launch " + gateway.RECOVERY2_WORK_ID),
+            (gateway.SOURCE, gateway.SOURCE_ID, "39870273851", gateway.RECOVERY2_SOURCE_SHA,
+             "gh-aw/work-queue/" + gateway.RECOVERY2_SOURCE_SHA, "gh-aw-code-worker.lock.yml", 41898282,
+             "gh-aw work-queue d_1ccd2e9191760f194efbb0dcd269965ba78292b77d234371dd958ab39d823ae0_1")):
             row = self.run(int(run_id), repository, repository_id, sha, branch, workflow)
             row.update(status="completed", conclusion="failure", display_title=title,
                 actor={"id": actor}, triggering_actor={"id": actor})
@@ -132,6 +180,8 @@ class Fixture:
                 return copy.deepcopy(self.original_marker)
             if path == "git/ref/heads/" + gateway.RECOVERY1_MARKER:
                 return copy.deepcopy(self.recovery1_marker)
+            if path == "git/ref/heads/" + gateway.RECOVERY2_MARKER:
+                return copy.deepcopy(self.recovery2_marker)
             if path.startswith("actions/runs/") and path.endswith("/attempts/1"):
                 return copy.deepcopy(self.previous[path.split("/")[2]])
             if repository == gateway.SOURCE and path == "":
@@ -215,12 +265,14 @@ class GatewayTests(unittest.TestCase):
         f = Fixture()
         original = copy.deepcopy(f.original_marker)
         recovery1 = copy.deepcopy(f.recovery1_marker)
+        recovery2 = copy.deepcopy(f.recovery2_marker)
         budget = copy.deepcopy(f.budget)
         f.execute()
         self.assertEqual(f.original_marker, original)
         self.assertEqual(f.recovery1_marker, recovery1)
+        self.assertEqual(f.recovery2_marker, recovery2)
         self.assertEqual(f.budget, budget)
-        self.assertEqual(f.budget["entries"][-1]["state"], "CONSUMED")
+        self.assertEqual(f.budget["entries"][2]["state"], "CONSUMED")
         creates = [c for c in f.calls if c[1] == "POST" and c[2] == "git/refs"]
         self.assertEqual([c[3]["ref"] for c in creates], ["refs/heads/" + gateway.MARKER])
         self.assertNotEqual(gateway.MARKER, gateway.ORIGINAL_MARKER)
@@ -229,6 +281,10 @@ class GatewayTests(unittest.TestCase):
         changes = (
             lambda f: setattr(f, "original_marker", None),
             lambda f: setattr(f, "recovery1_marker", None),
+            lambda f: setattr(f, "recovery2_marker", None),
+            lambda f: f.recovery2_marker["object"].update(sha="d" * 40),
+            lambda f: f.environment.update(CW_WORK_ID=gateway.RECOVERY2_WORK_ID),
+            lambda f: f.environment.update(CW_SOURCE_SHA=gateway.RECOVERY2_SOURCE_SHA),
             lambda f: f.recovery1_marker["object"].update(sha="d" * 40),
             lambda f: f.environment.update(CW_WORK_ID=gateway.RECOVERY1_WORK_ID),
             lambda f: f.environment.update(CW_SOURCE_SHA=gateway.RECOVERY1_SOURCE_SHA),
@@ -243,7 +299,7 @@ class GatewayTests(unittest.TestCase):
                 with self.assertRaises(Exception):
                     f.execute()
                 self.assertTrue(all(c[1] == "GET" for c in f.calls))
-        for run_id in ("39840999602", "39841115852", "39841262708", "39852724729", "39852966443", "39853131813"):
+        for run_id in ("39840999602", "39841115852", "39841262708", "39852724729", "39852966443", "39853131813", "39870019362", "39870151844", "39870273851"):
             for change in ({"status": "in_progress", "conclusion": None}, {"conclusion": "success"},
                            {"run_attempt": 2}, {"head_sha": "d" * 40}, {"event": "push"},
                            {"actor": {"id": 123}}, {"repository": {"full_name": "foreign", "id": 0}}):

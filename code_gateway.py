@@ -23,15 +23,19 @@ CONTROLLER = "orchestrator-code-controller.yml"
 WATCHDOG = "one-shot-gateway.yml"
 ORIGINAL_MARKER = "cw-issue129-code-package-consumed"
 RECOVERY1_MARKER = "cw-issue129-code-recovery1-consumed"
-MARKER = "cw-issue129-code-recovery2-consumed"
+RECOVERY2_MARKER = "cw-issue129-code-recovery2-consumed"
+MARKER = "cw-issue129-code-recovery3-consumed"
 ORIGINAL_PUBLIC_SHA = "ca40f15b187935a7ed001b161a9fae4263cd55e0"
 ORIGINAL_SOURCE_SHA = "0ce91af5f558942e271d06416eb14ded9a99142a"
 ORIGINAL_WORK_ID = "ba394f0b88edbc372f360496990d02fa77b8d33f587ec9f051a20822b1249c1c"
 RECOVERY1_WORK_ID = "078fc14324d2bbd501e38c8b6641e0f1f4ae0bac6ada8db0d63f9a996e391691"
 RECOVERY1_PUBLIC_SHA = "0bd469c8586ec3d05ee06ee9c1fe56d4cc8cc877"
 RECOVERY1_SOURCE_SHA = "c016d16a2f5ee01d7d8dba169c663ca5f030724f"
-RECOVERY_WORK_ID = "df442f6a440d52a3533ccbda0c20671ab54259f54ff481b5cfba2970594b88c5"
-RETAINED_BUDGET_SHA256 = "1c1c9844b2952285b94d3eb495dad300c35290e551165750a1d46dd8cba3ac57"
+RECOVERY2_WORK_ID = "df442f6a440d52a3533ccbda0c20671ab54259f54ff481b5cfba2970594b88c5"
+RECOVERY2_PUBLIC_SHA = "1ca08eb07be09f76faf8842871e4d8ee6e266367"
+RECOVERY2_SOURCE_SHA = "127512bb78dfbbf79746a7f14ca905a74ecc516f"
+RECOVERY_WORK_ID = "7761f5c0e74aaec872633668c85e04b4d0e50469745a10dc2d79475eb54edc16"
+RETAINED_BUDGET_SHA256 = "fdfe7fa44a9937d3dee0c566cb1d720f2df5a4ff91c2573762b537fae1eacd19"
 LIVE = ("requested", "queued", "in_progress", "waiting", "pending")
 # GitHub's bounded 50-run listing includes repository/user metadata per row.
 # Keep a finite byte ceiling while allowing the real listing (~700 KiB).
@@ -87,7 +91,7 @@ def context(environment):
         require(re.fullmatch("[a-f0-9]{40}", values[name]))
     require(re.fullmatch("[a-f0-9]{64}", values["CW_WORK_ID"])
             and values["CW_WORK_ID"] == RECOVERY_WORK_ID
-            and values["CW_SOURCE_SHA"] not in (ORIGINAL_SOURCE_SHA, RECOVERY1_SOURCE_SHA)
+            and values["CW_SOURCE_SHA"] not in (ORIGINAL_SOURCE_SHA, RECOVERY1_SOURCE_SHA, RECOVERY2_SOURCE_SHA)
             and re.fullmatch("[1-9][0-9]{0,19}", values["GITHUB_RUN_ID"]))
     return values
 
@@ -120,11 +124,11 @@ def source_preflight(call, token, source_sha):
 
 
 def predecessor(call, source_token, public_token):
-    """Read positive terminal evidence; retain both consumed attempt markers.
+    """Read positive terminal evidence; retain all three consumed attempt markers.
 
     The source controller independently authenticates the cancelled Claim and
     native Release before allowing the distinct successor Work to launch.
-    source_preflight requires the exact three-request $10/10 ledger, including
+    source_preflight requires the exact seven-request $10/10 ledger, including
     its CONSUMED/unknown outcome. Nothing refunds or replays that old request.
     """
     marker = call(PUBLIC, "GET", "git/ref/heads/" + ORIGINAL_MARKER, public_token)
@@ -133,6 +137,9 @@ def predecessor(call, source_token, public_token):
     marker = call(PUBLIC, "GET", "git/ref/heads/" + RECOVERY1_MARKER, public_token)
     require(type(marker) is dict and marker.get("ref") == "refs/heads/" + RECOVERY1_MARKER
             and marker.get("object", {}).get("sha") == RECOVERY1_PUBLIC_SHA)
+    marker = call(PUBLIC, "GET", "git/ref/heads/" + RECOVERY2_MARKER, public_token)
+    require(type(marker) is dict and marker.get("ref") == "refs/heads/" + RECOVERY2_MARKER
+            and marker.get("object", {}).get("sha") == RECOVERY2_PUBLIC_SHA)
     expected = (
         (PUBLIC, PUBLIC_ID, public_token, "39840999602", ORIGINAL_PUBLIC_SHA, "main", "code-gateway.yml", OWNER_ID,
          "CW issue129 code " + ORIGINAL_WORK_ID),
@@ -148,6 +155,13 @@ def predecessor(call, source_token, public_token):
         (SOURCE, SOURCE_ID, source_token, "39853131813", RECOVERY1_SOURCE_SHA,
          "gh-aw/work-queue/" + RECOVERY1_SOURCE_SHA, "gh-aw-code-worker.lock.yml", 41898282,
          "gh-aw work-queue d_e62d9eeaf7d5fbbedaeb9d5dce8f22542b7a1f805558414125ab90d37e244e59_1"),
+        (PUBLIC, PUBLIC_ID, public_token, "39870019362", RECOVERY2_PUBLIC_SHA, "main", "code-gateway.yml", OWNER_ID,
+         "CW issue129 code " + RECOVERY2_WORK_ID),
+        (SOURCE, SOURCE_ID, source_token, "39870151844", RECOVERY2_SOURCE_SHA, BRANCH, CONTROLLER, OWNER_ID,
+         "CW issue129 launch " + RECOVERY2_WORK_ID),
+        (SOURCE, SOURCE_ID, source_token, "39870273851", RECOVERY2_SOURCE_SHA,
+         "gh-aw/work-queue/" + RECOVERY2_SOURCE_SHA, "gh-aw-code-worker.lock.yml", 41898282,
+         "gh-aw work-queue d_1ccd2e9191760f194efbb0dcd269965ba78292b77d234371dd958ab39d823ae0_1"),
     )
     for repository, repository_id, token, run_id, sha, branch, workflow, actor, title in expected:
         run = call(repository, "GET", "actions/runs/" + run_id + "/attempts/1", token)
