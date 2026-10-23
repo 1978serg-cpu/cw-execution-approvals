@@ -32,6 +32,12 @@ ACCELERATED2_MARKER = "cw-issue129-accelerated2-consumed"
 ACCELERATED2_WORK = "e1a5eaaa15985deeede5a2212dc59defc856c0c6ee6697d2b50f26656c731c7f"
 ACCELERATED3_MARKER = "cw-issue129-accelerated3-consumed"
 ACCELERATED3_WORK = "ab29e0a8ab0d09f9f37baa43332a58ab27957e80cb41920f32b98b58f5bd48fd"
+ACCELERATED4_MARKER = "cw-issue129-accelerated4-consumed"
+ACCELERATED4_WORK = "7ab4624b2453ff8dbf301193e86d8e578a157e23cfcb5a71c7ce6d7095f2deb0"
+ACCELERATED3_SOURCE = "ed3c9d3c78afc3b97e1ec755617f96b09377d870"
+ACCELERATED3_PUBLIC = "6138cfb6cb1180f3bd31a559588648f5e0cc18f9"
+RETAINED_ACCELERATED_HEAD = "26936196b6b690dc5ac7542b4377541d3c62b315"
+RETAINED_ACCELERATED_SHA256 = "9018aa21eac61277c9628faaabd72b1ee2fdb1a4e497f44e4da2fe31e60b5f41"
 ACCELERATED2_SOURCE = "c7be289a11f899dee96f0d5f2fbe9c400ac5753f"
 ACCELERATED2_PUBLIC = "e34d59c9932bdef5e7b62924b8159a5eaadc5fb4"
 ACCELERATED1_SOURCE = "dbaf880be664a82b93cbb2551fb5ba6de88a580d"
@@ -104,15 +110,17 @@ def context(environment):
     for name in ("GITHUB_SHA", "CW_SOURCE_SHA"):
         require(re.fullmatch("[a-f0-9]{40}", values[name]))
     require(re.fullmatch("[a-f0-9]{64}", values["CW_WORK_ID"])
-            and values["CW_WORK_ID"] in (RECOVERY_WORK_ID, ACCELERATED_WORK, ACCELERATED2_WORK, ACCELERATED3_WORK)
+            and values["CW_WORK_ID"] in (RECOVERY_WORK_ID, ACCELERATED_WORK, ACCELERATED2_WORK, ACCELERATED3_WORK, ACCELERATED4_WORK)
             and values["CW_SOURCE_SHA"] not in (ORIGINAL_SOURCE_SHA, RECOVERY1_SOURCE_SHA, RECOVERY2_SOURCE_SHA)
             and re.fullmatch("[1-9][0-9]{0,19}", values["GITHUB_RUN_ID"]))
-    if values["CW_WORK_ID"] in (ACCELERATED_WORK, ACCELERATED2_WORK, ACCELERATED3_WORK):
+    if values["CW_WORK_ID"] in (ACCELERATED_WORK, ACCELERATED2_WORK, ACCELERATED3_WORK, ACCELERATED4_WORK):
         require(values["CW_SOURCE_SHA"] != RECOVERY3_SOURCE)
-    if values["CW_WORK_ID"] in (ACCELERATED2_WORK, ACCELERATED3_WORK):
+    if values["CW_WORK_ID"] in (ACCELERATED2_WORK, ACCELERATED3_WORK, ACCELERATED4_WORK):
         require(values["CW_SOURCE_SHA"] != ACCELERATED1_SOURCE)
-    if values["CW_WORK_ID"] == ACCELERATED3_WORK:
+    if values["CW_WORK_ID"] in (ACCELERATED3_WORK, ACCELERATED4_WORK):
         require(values["CW_SOURCE_SHA"] != ACCELERATED2_SOURCE)
+    if values["CW_WORK_ID"] == ACCELERATED4_WORK:
+        require(values["CW_SOURCE_SHA"] != ACCELERATED3_SOURCE)
     return values
 
 
@@ -121,7 +129,7 @@ def rows(document, name):
     return document[name]
 
 
-def source_preflight(call, token, source_sha, *, accelerated=False):
+def source_preflight(call, token, source_sha, *, accelerated=False, continuation=False):
     print("CODE_GATEWAY_READ_SOURCE_IDENTITY", flush=True)
     repository = call(SOURCE, "GET", "", token)
     require(repository.get("full_name") == SOURCE and repository.get("id") == SOURCE_ID
@@ -140,7 +148,13 @@ def source_preflight(call, token, source_sha, *, accelerated=False):
                 + ("cw-issue129-accelerated-budget" if accelerated else "cw-issue129-budget"), token)
     require(file.get("type") == "file" and file.get("encoding") == "base64" and file.get("size", 999999) <= 65536)
     budget = json.loads(base64.b64decode(file["content"], validate=False), object_pairs_hook=unique)
-    if accelerated:
+    if accelerated and continuation:
+        require(hashlib.sha256(json.dumps(budget, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()).hexdigest()
+                == RETAINED_ACCELERATED_SHA256)
+        tip = call(SOURCE, "GET", "git/ref/heads/cw-issue129-accelerated-budget", token)
+        require(tip.get("ref") == "refs/heads/cw-issue129-accelerated-budget"
+                and tip.get("object", {}).get("sha") == RETAINED_ACCELERATED_HEAD)
+    elif accelerated:
         require(type(budget) is dict and set(budget) == {"version", "package", "cap_cents", "max_requests",
             "revision", "transition_id", "entries"} and type(budget["version"]) is int and budget["version"] == 2
             and budget["package"] == ACCELERATED_PACKAGE and type(budget["cap_cents"]) is int and budget["cap_cents"] == 5000
@@ -156,7 +170,7 @@ def source_preflight(call, token, source_sha, *, accelerated=False):
         require(not any(run.get("status") in LIVE for run in history))
 
 
-def predecessor(call, source_token, public_token, *, accelerated=False, successor=False, third=False):
+def predecessor(call, source_token, public_token, *, accelerated=False, successor=False, third=False, fourth=False):
     """Read positive terminal evidence; retain all three consumed attempt markers.
 
     The source controller independently authenticates the cancelled Claim and
@@ -240,6 +254,21 @@ def predecessor(call, source_token, public_token, *, accelerated=False, successo
              "gh-aw work-queue d_30cce43ff67fc2fbb7a973647eec6879d050ac5f5444473f9c03346cbc6746cd_1"),
         )
         outcomes["39888673546"] = "cancelled"
+    if fourth:
+        require(third)
+        marker = call(PUBLIC, "GET", "git/ref/heads/" + ACCELERATED3_MARKER, public_token)
+        require(type(marker) is dict and marker.get("ref") == "refs/heads/" + ACCELERATED3_MARKER
+                and marker.get("object", {}).get("sha") == ACCELERATED3_PUBLIC)
+        expected += (
+            (PUBLIC, PUBLIC_ID, public_token, "39890045831", ACCELERATED3_PUBLIC, "main", "code-gateway.yml", OWNER_ID,
+             "CW issue129 code " + ACCELERATED3_WORK),
+            (SOURCE, SOURCE_ID, source_token, "39890148979", ACCELERATED3_SOURCE, BRANCH, CONTROLLER, OWNER_ID,
+             "CW issue129 accelerated_launch " + ACCELERATED3_WORK),
+            (SOURCE, SOURCE_ID, source_token, "39890241163", ACCELERATED3_SOURCE, "gh-aw/work-queue/" + ACCELERATED3_SOURCE,
+             "gh-aw-code-worker.lock.yml", 41898282,
+             "gh-aw work-queue d_173aa0daa460d2af534eb992610379e53cb83c81c413291073c3fff6182a167d_1"),
+        )
+        outcomes.update({"39890045831": "cancelled", "39890241163": "cancelled"})
     for repository, repository_id, token, run_id, sha, branch, workflow, actor, title in expected:
         run = call(repository, "GET", "actions/runs/" + run_id + "/attempts/1", token)
         require(type(run) is dict and str(run.get("id")) == run_id
@@ -328,10 +357,11 @@ def arm_watchdog(call, token, own, *, clock, monotonic, pause):
 
 def execute(environment, *, call=api, clock=time.time, monotonic=time.monotonic, pause=time.sleep):
     own = context(environment)
-    third = own["CW_WORK_ID"] == ACCELERATED3_WORK
-    successor = own["CW_WORK_ID"] in (ACCELERATED2_WORK, ACCELERATED3_WORK)
-    accelerated = own["CW_WORK_ID"] in (ACCELERATED_WORK, ACCELERATED2_WORK, ACCELERATED3_WORK)
-    marker_name = ACCELERATED3_MARKER if third else ACCELERATED2_MARKER if successor else ACCELERATED_MARKER if accelerated else MARKER
+    fourth = own["CW_WORK_ID"] == ACCELERATED4_WORK
+    third = own["CW_WORK_ID"] in (ACCELERATED3_WORK, ACCELERATED4_WORK)
+    successor = own["CW_WORK_ID"] in (ACCELERATED2_WORK, ACCELERATED3_WORK, ACCELERATED4_WORK)
+    accelerated = own["CW_WORK_ID"] in (ACCELERATED_WORK, ACCELERATED2_WORK, ACCELERATED3_WORK, ACCELERATED4_WORK)
+    marker_name = ACCELERATED4_MARKER if fourth else ACCELERATED3_MARKER if third else ACCELERATED2_MARKER if successor else ACCELERATED_MARKER if accelerated else MARKER
     launch_mode = "accelerated_launch" if accelerated else "launch"
     preflight_only = environment.get("CW_PREFLIGHT_ONLY", "false")
     require(preflight_only in ("true", "false"))
@@ -339,9 +369,9 @@ def execute(environment, *, call=api, clock=time.time, monotonic=time.monotonic,
     print("CODE_GATEWAY_VERIFY_APPROVAL", flush=True)
     own_run = approval(call, public_token, own, int(clock()))
     print("CODE_GATEWAY_VERIFY_SOURCE_OFF_AND_RETAINED_BUDGET", flush=True)
-    source_preflight(call, source_token, own["CW_SOURCE_SHA"], accelerated=accelerated)
+    source_preflight(call, source_token, own["CW_SOURCE_SHA"], accelerated=accelerated, continuation=fourth)
     print("CODE_GATEWAY_VERIFY_FIXED_TERMINAL_PREDECESSOR", flush=True)
-    predecessor(call, source_token, public_token, accelerated=accelerated, successor=successor, third=third)
+    predecessor(call, source_token, public_token, accelerated=accelerated, successor=successor, third=third, fourth=fourth)
     require(call(PUBLIC, "GET", "git/ref/heads/" + marker_name, public_token) is None)
     if preflight_only == "true":
         return "CODE_GATEWAY_PREFLIGHT_VERIFIED_NO_DISPATCH_NO_SPEND"

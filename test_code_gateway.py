@@ -4,6 +4,7 @@ import copy
 import datetime as dt
 import json
 import io
+import hashlib
 from pathlib import Path
 import sys
 import unittest
@@ -643,6 +644,75 @@ class AcceleratedThirdTests(unittest.TestCase):
                        lambda f: f.accelerated_budget.update(entries=[{}]),
                        lambda f: f.environment.update(CW_SOURCE_SHA=gateway.ACCELERATED2_SOURCE)):
             f = AcceleratedThirdFixture(); mutate(f)
+            with self.assertRaises(Exception): f.execute()
+            self.assertTrue(all(c[1] == "GET" for c in f.calls))
+
+
+
+
+class AcceleratedFourthFixture(AcceleratedThirdFixture):
+    def __init__(self):
+        super().__init__()
+        self.work_id = gateway.ACCELERATED4_WORK; self.environment["CW_WORK_ID"] = self.work_id
+        self.public_run["display_title"] = "CW issue129 code " + self.work_id
+        self.source_run["display_title"] = "CW issue129 accelerated_launch " + self.work_id
+        self.third_consumed = {"ref": "refs/heads/" + gateway.ACCELERATED3_MARKER,
+            "object": {"sha": gateway.ACCELERATED3_PUBLIC}}
+        # Synthetic records only: live private budget entries are not published.
+        self.accelerated_head = gateway.RETAINED_ACCELERATED_HEAD
+        self.accelerated_budget.update(revision=6, entries=[
+            {"state": "FINALIZED", "settled_cents": 1, "ceiling_cents": 1100, "sequence": 1},
+            {"state": "RESERVED", "ceiling_cents": 1100, "sequence": 2},
+            {"state": "CONSUMED", "ceiling_cents": 1100, "sequence": 3}])
+        self.synthetic_hash = hashlib.sha256(json.dumps(self.accelerated_budget, sort_keys=True,
+            separators=(",", ":"), ensure_ascii=True).encode()).hexdigest()
+        for repository, repository_id, run_id, sha, branch, workflow, actor, title, conclusion in (
+            (gateway.PUBLIC, gateway.PUBLIC_ID, "39890045831", gateway.ACCELERATED3_PUBLIC, "main", "code-gateway.yml", gateway.OWNER_ID,
+             "CW issue129 code " + gateway.ACCELERATED3_WORK, "cancelled"),
+            (gateway.SOURCE, gateway.SOURCE_ID, "39890148979", gateway.ACCELERATED3_SOURCE, gateway.BRANCH, gateway.CONTROLLER, gateway.OWNER_ID,
+             "CW issue129 accelerated_launch " + gateway.ACCELERATED3_WORK, "failure"),
+            (gateway.SOURCE, gateway.SOURCE_ID, "39890241163", gateway.ACCELERATED3_SOURCE, "gh-aw/work-queue/" + gateway.ACCELERATED3_SOURCE,
+             "gh-aw-code-worker.lock.yml", 41898282,
+             "gh-aw work-queue d_173aa0daa460d2af534eb992610379e53cb83c81c413291073c3fff6182a167d_1", "cancelled"),
+        ):
+            run = self.run(int(run_id), repository, repository_id, sha, branch, workflow)
+            run.update(status="completed", conclusion=conclusion, display_title=title,
+                actor={"id": actor}, triggering_actor={"id": actor}); self.previous[run_id] = run
+
+    def execute(self):
+        # The private repository separately verifies the real immutable digest.
+        with mock.patch.object(gateway, "RETAINED_ACCELERATED_SHA256", self.synthetic_hash):
+            return super().execute()
+
+    def call(self, repository, method, path, token, body=None):
+        if repository == gateway.SOURCE and method == "GET" and path == "git/ref/heads/cw-issue129-accelerated-budget":
+            self.calls.append((repository, method, path, copy.deepcopy(body)))
+            return {"ref": "refs/heads/cw-issue129-accelerated-budget", "object": {"sha": self.accelerated_head}}
+        if repository == gateway.PUBLIC and method == "GET" and path in (
+                "git/ref/heads/" + gateway.ACCELERATED3_MARKER, "git/ref/heads/" + gateway.ACCELERATED4_MARKER):
+            self.calls.append((repository, method, path, copy.deepcopy(body)))
+            return copy.deepcopy(self.third_consumed if path.endswith(gateway.ACCELERATED3_MARKER) else self.marker)
+        return super().call(repository, method, path, token, body)
+
+
+class AcceleratedFourthTests(unittest.TestCase):
+    def test_fourth_work_preserves_three_markers_and_all_retained_budget_states(self):
+        f = AcceleratedFourthFixture(); budget = copy.deepcopy(f.accelerated_budget)
+        markers = copy.deepcopy([f.first_consumed, f.second_consumed, f.third_consumed])
+        self.assertEqual(f.execute(), "CODE_CONTROLLER_COMPLETED_NATIVE_RESULT_REQUIRES_READBACK")
+        self.assertEqual(f.marker["ref"], "refs/heads/" + gateway.ACCELERATED4_MARKER)
+        self.assertEqual(f.accelerated_budget, budget)
+        self.assertEqual([f.first_consumed, f.second_consumed, f.third_consumed], markers)
+        self.assertEqual(list(f.gates.values()), ["false", "false"])
+
+    def test_fourth_work_cannot_refund_reset_or_replace_the_retained_budget(self):
+        for mutate in (lambda f: setattr(f, "third_consumed", None),
+                       lambda f: f.accelerated_budget.update(entries=[]),
+                       lambda f: f.accelerated_budget["entries"].pop(),
+                       lambda f: f.accelerated_budget["entries"][1].update(ceiling_cents=0),
+                       lambda f: setattr(f, "accelerated_head", "a" * 40),
+                       lambda f: f.previous["39890241163"].update(conclusion="success")):
+            f = AcceleratedFourthFixture(); mutate(f)
             with self.assertRaises(Exception): f.execute()
             self.assertTrue(all(c[1] == "GET" for c in f.calls))
 
