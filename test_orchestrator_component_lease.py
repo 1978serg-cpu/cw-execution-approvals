@@ -11,7 +11,7 @@ class ComponentFixture(Fixture):
     def __init__(self):
         super().__init__()
         self.doc.pop("work_id")
-        self.doc.update(package="issue129-20261022-accelerated", cap_cents=7000, max_requests=100,
+        self.doc.update(package="issue129-20261022-accelerated", cap_cents=15000, max_requests=500,
             approval_ref="c" * 40, work_order_sha256="d" * 64, spec_sha256="e" * 64,
             issued_at=NOW, expires_at=NOW + component.TTL_SECONDS)
         self.parent["created_at"] = stamp(NOW)
@@ -44,17 +44,17 @@ class ComponentFixture(Fixture):
 
 
 class ComponentLeaseTests(unittest.TestCase):
-    def test_real_component_schema_allows_45_minutes(self):
+    def test_real_component_schema_allows_90_minutes(self):
         f = ComponentFixture()
         self.assertEqual(f.active(), f.doc)
-        self.assertEqual(component.decode(json.dumps(f.doc), now=NOW + 2699), f.doc)
+        self.assertEqual(component.decode(json.dumps(f.doc), now=NOW + 5399), f.doc)
         with self.assertRaises(Exception):
-            component.decode(json.dumps(f.doc), now=NOW + 2700)
+            component.decode(json.dumps(f.doc), now=NOW + 5400)
 
     def test_closed_schema_and_exact_types(self):
         f = ComponentFixture()
-        faults = [("version", True), ("cap_cents", 7000.0), ("cap_cents", 7001),
-            ("max_requests", True), ("issued_at", NOW + 1), ("expires_at", NOW + 2701),
+        faults = [("version", True), ("cap_cents", 15000.0), ("cap_cents", 15001),
+            ("max_requests", True), ("issued_at", NOW + 1), ("expires_at", NOW + 5401),
             ("approval_ref", f.doc["source_sha"]), ("gateway_run_id", "01"),
             ("source_sha", "A" * 40), ("work_order_sha256", "d" * 63), ("extra", 1)]
         for name, value in faults:
@@ -88,8 +88,8 @@ class ComponentLeaseTests(unittest.TestCase):
 
     def test_lease_cannot_extend_original_parent_window(self):
         f = ComponentFixture()
-        f.doc["issued_at"] += 121; f.doc["expires_at"] += 121
-        self.assertIsNone(component.active_lease(f.api, "source-token", "public-token", now=NOW + 121))
+        f.doc["issued_at"] += 301; f.doc["expires_at"] += 301
+        self.assertIsNone(component.active_lease(f.api, "source-token", "public-token", now=NOW + 301))
 
     def test_exact_watch_parent_is_required_and_both_gates_are_disabled(self):
         f = ComponentFixture()

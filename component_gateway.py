@@ -103,7 +103,7 @@ def read_file(call, token, path, ref):
     value = call(SOURCE, "GET", "contents/" + path + "?ref=" + ref, token)
     require(type(value) is dict and value.get("type") == "file" and value.get("encoding") == "base64"
         and type(value.get("content")) is str and type(value.get("size")) is int
-        and 0 < value["size"] <= 65536 and SHA.fullmatch(value.get("sha", "")))
+        and 0 < value["size"] <= 262144 and SHA.fullmatch(value.get("sha", "")))
     encoded = "".join(value["content"].splitlines())
     raw = base64.b64decode(encoded, validate=True)
     require(len(raw) == value["size"] and base64.b64encode(raw).decode() == encoded
@@ -112,12 +112,12 @@ def read_file(call, token, path, ref):
 
 
 def budget_capacity(current, retained):
-    for budget in (current, retained):
+    for budget, cap, count in ((current, 15000, 500), (retained, 7000, 100)):
         require(type(budget) is dict and budget.get("version") == 2
             and budget.get("package") == "issue129-20261022-accelerated"
-            and type(budget.get("cap_cents")) is int and budget["cap_cents"] == 7000
-            and type(budget.get("max_requests")) is int and budget["max_requests"] == 100
-            and type(budget.get("entries")) is list and 30 <= len(budget["entries"]) <= 100)
+            and type(budget.get("cap_cents")) is int and budget["cap_cents"] == cap
+            and type(budget.get("max_requests")) is int and budget["max_requests"] == count
+            and type(budget.get("entries")) is list and 30 <= len(budget["entries"]) <= count)
     require(len(retained["entries"]) == 30 and canonical(current["entries"][:30]) == canonical(retained["entries"]))
     def cost(entry):
         require(type(entry) is dict and entry.get("state") in ("RESERVED", "CONSUMED", "FINALIZED")
@@ -128,9 +128,9 @@ def budget_capacity(current, retained):
         require("settled_cents" not in entry)
         return entry["ceiling_cents"]
     require(sum(cost(e) for e in retained["entries"]) == 5964)
-    remaining = 7000 - sum(cost(e) for e in current["entries"])
+    remaining = 15000 - sum(cost(e) for e in current["entries"])
     require(remaining >= 0)
-    return remaining >= 2400 and 100 - len(current["entries"]) >= 70
+    return remaining >= 2400 and 500 - len(current["entries"]) >= 70
 
 
 def source_preflight(call, token, own):
@@ -166,7 +166,7 @@ def arm_watchdog(call, token, own, *, clock, monotonic, pause):
     call(PUBLIC, "POST", "actions/workflows/" + WATCHDOG + "/dispatches", token,
         {"ref": "main", "inputs": {"mode": "component_watch", "parent_run_id": own["GITHUB_RUN_ID"]}})
     run = discover(call, token, PUBLIC, WATCHDOG, "CW issue88 component_watch " + own["GITHUB_RUN_ID"],
-        own["GITHUB_SHA"], "main", started, clock=clock, monotonic=monotonic, pause=pause, owner_required=False)
+        own["GITHUB_SHA"], "main", started, clock=clock, monotonic=monotonic, pause=pause, owner_required=False, timeout_seconds=300)
     deadline, active_since = monotonic() + 65, None
     while monotonic() < deadline:
         current = call(PUBLIC, "GET", "actions/runs/" + str(run["id"]), token)
@@ -206,13 +206,13 @@ def execute(env, *, call=api, clock=time.time, monotonic=time.monotonic, pause=t
         call(SOURCE, "POST", "actions/workflows/" + CONTROLLER + "/dispatches", source_token,
             {"ref": lease.BRANCH, "inputs": inputs})
         source = discover(call, source_token, SOURCE, CONTROLLER, "CW component controller " + own["CW_WORK_ORDER_SHA256"],
-            own["CW_SOURCE_SHA"], lease.BRANCH, started, clock=clock, monotonic=monotonic, pause=pause)
+            own["CW_SOURCE_SHA"], lease.BRANCH, started, clock=clock, monotonic=monotonic, pause=pause, timeout_seconds=300)
         issued = int(clock())
         grant = {"version": 1, "package": "issue129-20261022-accelerated", "source_sha": own["CW_SOURCE_SHA"],
             "approval_ref": own["CW_APPROVAL_REF"], "work_order_sha256": own["CW_WORK_ORDER_SHA256"],
             "spec_sha256": own["CW_SPEC_SHA256"], "controller_run_id": str(source["id"]),
             "gateway_run_id": own["GITHUB_RUN_ID"], "gateway_sha": own["GITHUB_SHA"], "issued_at": issued,
-            "expires_at": created_at(public_run) + lease.TTL_SECONDS, "cap_cents": 7000, "max_requests": 100}
+            "expires_at": created_at(public_run) + lease.TTL_SECONDS, "cap_cents": 15000, "max_requests": 500}
         lease.public_parent(grant, public_run, now=issued); lease.source_parent(grant, source, now=issued)
         old = call(SOURCE, "GET", "actions/variables/" + lease.LEASE, source_token)
         value = {"name": lease.LEASE, "value": canonical(grant).decode()}
@@ -223,7 +223,7 @@ def execute(env, *, call=api, clock=time.time, monotonic=time.monotonic, pause=t
         watch_id = arm_watchdog(call, public_token, own, clock=clock, monotonic=monotonic, pause=pause)
         # The source must finish OFF-only graph admission before either gate can
         # be enabled. Merely starting its controller job is insufficient.
-        deadline = monotonic() + 45
+        deadline = monotonic() + 180
         prepared = False
         while monotonic() < deadline:
             jobs = rows(call(SOURCE, "GET", "actions/runs/" + str(source["id"]) + "/jobs?per_page=50", source_token), "jobs")

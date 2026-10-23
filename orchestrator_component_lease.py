@@ -12,7 +12,7 @@ from orchestrator_code_lease import (
 )
 
 LEASE = "CW_CODEX_COMPONENT_LEASE"
-TTL_SECONDS = 2700
+TTL_SECONDS = 5400
 BRANCH = "feature/emergency-close-persistence"
 FIELDS = {"version", "package", "source_sha", "approval_ref", "work_order_sha256",
           "spec_sha256", "controller_run_id", "gateway_run_id", "gateway_sha",
@@ -28,8 +28,8 @@ def decode(raw, *, now):
     require(type(value) is dict and set(value) == FIELDS
             and type(value["version"]) is int and value["version"] == 1
             and value["package"] == "issue129-20261022-accelerated"
-            and type(value["cap_cents"]) is int and value["cap_cents"] == 7000
-            and type(value["max_requests"]) is int and value["max_requests"] == 100)
+            and type(value["cap_cents"]) is int and value["cap_cents"] == 15000
+            and type(value["max_requests"]) is int and value["max_requests"] == 500)
     for name, size in (("source_sha", 40), ("approval_ref", 40), ("gateway_sha", 40),
                        ("work_order_sha256", 64), ("spec_sha256", 64)):
         require(type(value[name]) is str and re.fullmatch("[a-f0-9]{" + str(size) + "}", value[name]))
@@ -67,7 +67,7 @@ def public_parent(lease, run, *, now):
         run_id=lease["gateway_run_id"], head=lease["gateway_sha"], branch="main",
         workflow=".github/workflows/component-gateway.yml",
         title="CW component order " + lease["work_order_sha256"], now=now)
-    require(start <= lease["issued_at"] <= start + 120 and lease["expires_at"] <= start + TTL_SECONDS)
+    require(start <= lease["issued_at"] <= start + 300 and lease["expires_at"] <= start + TTL_SECONDS)
 
 
 def source_parent(lease, run, *, now):
@@ -76,7 +76,7 @@ def source_parent(lease, run, *, now):
         run_id=lease["controller_run_id"], head=lease["source_sha"], branch=BRANCH,
         workflow=".github/workflows/orchestrator-component-controller.yml",
         title="CW component controller " + lease["work_order_sha256"], now=now)
-    require(abs(start - lease["issued_at"]) <= 120)
+    require(abs(start - lease["issued_at"]) <= 300)
 
 
 def active_lease(api, token, public_token, *, now, parent_id=None):

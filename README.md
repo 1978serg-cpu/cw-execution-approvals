@@ -9,15 +9,15 @@ private task text and request records are never printed or committed here.
 
 The existing aggregate package and immutable historical cost/unknown records
 are retained. Insufficient concurrent reserves or request slots stop before
-any write, marker, queue preparation or dispatch. The current frozen package
-cannot fund a four-worker wave; this code does not increase its ceiling or
-refund historical records. Changing that package requires a separately
-authorized, consistent update to the private controller and its budget policy.
+any write, marker, queue preparation or dispatch. The owner-approved component policy is $150 / 500 requests. The existing
+$70 / 100 checkpoint must be converted once while OFF, retaining every record.
+The private controller and public lease require the same policy. A pure
+preflight cannot convert the budget or refund historical records.
 
 A launch consumes one order marker, waits for OFF-only native graph preparation,
 arms the independent watchdog and only then enables the existing execution
 flags. Both immutable owner runs must remain active within the original
-45-minute window. Completion, expiry, unreadable evidence and unknown outcomes
+90-minute window. Completion, expiry, unreadable evidence and unknown outcomes
 cause both flags to be written false and read back. The watchdog cannot enable
 execution. The scheduled fallback supports both legacy code leases and the
 component lease. No uncertain dispatch is repeated.

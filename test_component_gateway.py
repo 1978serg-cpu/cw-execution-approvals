@@ -12,8 +12,8 @@ from test_orchestrator_code_lease import NOW, stamp
 
 
 def synthetic_budget():
-    return {"version": 2, "package": "issue129-20261022-accelerated", "cap_cents": 7000,
-        "max_requests": 100, "entries": [
+    return {"version": 2, "package": "issue129-20261022-accelerated", "cap_cents": 15000,
+        "max_requests": 500, "entries": [
             {"state": "CONSUMED", "ceiling_cents": 200 if i < 29 else 164,
              "request_id": f"{i:064x}"} for i in range(30)]}
 
@@ -76,7 +76,7 @@ class Fixture:
                 if path == "git/ref/heads/" + lease.BRANCH: return {"object": {"sha": "a" * 40}}
                 if path == "git/ref/heads/" + gateway.BUDGET: return {"object": {"sha": "f" * 40}}
                 if path.startswith("contents/package-budget.json?ref="):
-                    return self.file(synthetic_budget() if path.endswith(gateway.CHECKPOINT) else self.budget)
+                    return self.file({**synthetic_budget(), "cap_cents": 7000, "max_requests": 100} if path.endswith(gateway.CHECKPOINT) else self.budget)
                 if path.startswith("actions/variables/"):
                     name = path.split("/")[-1]
                     if name in self.gates: return {"name": name, "value": self.gates[name]}
@@ -112,18 +112,19 @@ class Fixture:
 class ComponentGatewayTests(unittest.TestCase):
     def test_actual_retained_budget_blocks_before_any_write_even_in_launch_mode(self):
         f = Fixture()
+        f.budget["entries"].append({"state":"CONSUMED","ceiling_cents":9000})
         original = copy.deepcopy(f.budget)
         self.assertEqual(f.execute(), "COMPONENT_GATEWAY_BUDGET_BLOCKED_NO_DISPATCH_NO_SPEND")
         self.assertTrue(all(method == "GET" for _, method, _, _ in f.calls))
         self.assertEqual(f.budget, original)
 
     def test_historical_prefix_and_uncertain_costs_cannot_be_discounted(self):
-        original = synthetic_budget()
+        original = {**synthetic_budget(), "cap_cents":7000, "max_requests":100}
         for change in ("prefix", "unknown_settlement", "over_cap", "wrong_package"):
-            d = copy.deepcopy(original)
+            d = {**copy.deepcopy(original), "cap_cents":15000, "max_requests":500}
             if change == "prefix": d["entries"][0]["ceiling_cents"] = 1
             if change == "unknown_settlement": d["entries"].append({"state": "CONSUMED", "ceiling_cents": 600, "settled_cents": 0})
-            if change == "over_cap": d["entries"].append({"state": "RESERVED", "ceiling_cents": 7000})
+            if change == "over_cap": d["entries"].append({"state": "RESERVED", "ceiling_cents": 15000})
             if change == "wrong_package": d["package"] = "replacement"
             with self.subTest(change=change), self.assertRaises(Exception):
                 gateway.budget_capacity(d, original)
