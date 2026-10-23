@@ -1,0 +1,54 @@
+name: Native four-component approval gateway
+run-name: CW component order ${{ inputs.work_order_sha256 }}
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact reviewed private controller revision
+        required: true
+        type: string
+      approval_ref:
+        description: Immutable approved order/spec commit
+        required: true
+        type: string
+      work_order_sha256:
+        description: Reviewed order digest (no task text)
+        required: true
+        type: string
+      spec_sha256:
+        description: Reviewed specification digest
+        required: true
+        type: string
+      preflight_only:
+        description: Verify readiness without dispatch or spend
+        required: true
+        type: boolean
+        default: true
+permissions: {}
+concurrency:
+  group: cw-issue129-one-code-package
+  cancel-in-progress: false
+jobs:
+  component:
+    if: github.repository == '1978serg-cpu/cw-execution-approvals' && github.repository_id == '1428447847' && github.ref == 'refs/heads/main' && github.actor_id == '344015223' && github.run_attempt == 1
+    environment: paid-one-shot
+    runs-on: ubuntu-24.04
+    timeout-minutes: 47
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify budget and OFF, arm watchdog, dispatch finite native controller once
+        env:
+          GH_PUBLIC_TOKEN: ${{ github.token }}
+          CW_GATEWAY_OPERATOR_TOKEN: ${{ secrets.CW_GATEWAY_OPERATOR_TOKEN }}
+          CW_SOURCE_SHA: ${{ inputs.source_sha }}
+          CW_APPROVAL_REF: ${{ inputs.approval_ref }}
+          CW_WORK_ORDER_SHA256: ${{ inputs.work_order_sha256 }}
+          CW_SPEC_SHA256: ${{ inputs.spec_sha256 }}
+          CW_PREFLIGHT_ONLY: ${{ inputs.preflight_only && 'true' || 'false' }}
+        run: python3 component_gateway.py

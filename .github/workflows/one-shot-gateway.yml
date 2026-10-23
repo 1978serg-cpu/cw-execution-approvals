@@ -17,6 +17,7 @@ on:
           - paid_pilot
           - off_watch
           - code_watch
+          - component_watch
       parent_run_id:
         description: "Internal watchdog link; keep 0 for manual runs"
         required: false
@@ -34,10 +35,10 @@ jobs:
       github.ref == 'refs/heads/main' &&
       (github.event_name == 'schedule' ||
        (github.event_name == 'workflow_dispatch' &&
-        (inputs.mode == 'off_selftest' || inputs.mode == 'off_watch' || inputs.mode == 'code_watch')))
+        (inputs.mode == 'off_selftest' || inputs.mode == 'off_watch' || inputs.mode == 'code_watch' || inputs.mode == 'component_watch')))
     name: Independent OFF-only watchdog
     runs-on: ubuntu-24.04
-    timeout-minutes: 22
+    timeout-minutes: 47
     permissions:
       contents: read
       actions: read
@@ -74,6 +75,9 @@ jobs:
           from orchestrator_code_lease import (
               LeaseDenied as CodeLeaseDenied, guard_once as guard_code_once,
               force_off as force_code_off, watch_code,
+          )
+          from orchestrator_component_lease import (
+              guard_once as guard_component_once, watch_component,
           )
 
           SRC = '1978serg-cpu/crypto-watchdog'
@@ -174,7 +178,7 @@ jobs:
               mode = os.environ.get('CW_MODE', '')
               if (os.environ.get('GITHUB_REPOSITORY') != PUB or
                       os.environ.get('GITHUB_REF') != 'refs/heads/main' or
-                      mode not in ('off_selftest', 'off_watch', 'scheduled_off', 'code_watch')):
+                      mode not in ('off_selftest', 'off_watch', 'scheduled_off', 'code_watch', 'component_watch')):
                   raise Denied('OFF_CONTEXT_NOT_ALLOWED')
               # Selftest always patches False, even if variable is already off; proves
               # distinct token's ability to force a write and verify readback.
@@ -184,6 +188,15 @@ jobs:
                   print(guard_code_once(api, token, pub_token, now=int(time.time()), self_test=True))
                   print('OFF_SELFTEST_SUCCESS_NO_MODEL_NO_SPEND')
                   return 0
+              if mode == 'component_watch':
+                  if os.environ.get('GITHUB_EVENT_NAME') != 'workflow_dispatch':
+                      raise Denied('COMPONENT_WATCH_REQUIRES_WORKFLOW_DISPATCH')
+                  result = watch_component(api, token, pub_token,
+                      parent_id=os.environ.get('CW_PARENT_RUN_ID', ''),
+                      now=lambda: int(time.time()), monotonic=time.monotonic,
+                      pause=time.sleep, report=lambda value: print(value, flush=True))
+                  print(result)
+                  return 0
               if mode == 'code_watch':
                   if os.environ.get('GITHUB_EVENT_NAME') != 'workflow_dispatch':
                       raise Denied('CODE_WATCH_REQUIRES_WORKFLOW_DISPATCH')
@@ -192,6 +205,14 @@ jobs:
                       now=lambda: int(time.time()), monotonic=time.monotonic,
                       pause=time.sleep, report=lambda value: print(value, flush=True))
                   print(result)
+                  return 0
+              try:
+                  component = guard_component_once(api, token, pub_token, now=int(time.time()))
+              except Exception:
+                  force_off(token)
+                  return 0
+              if component != 'NOT_COMPONENT_LEASE':
+                  print(component)
                   return 0
               code = guard_code_once(api, token, pub_token, now=int(time.time()))
               if code != 'NOT_CODE_LEASE':
