@@ -38,7 +38,7 @@ jobs:
         (inputs.mode == 'off_selftest' || inputs.mode == 'off_watch' || inputs.mode == 'code_watch' || inputs.mode == 'component_watch')))
     name: Independent OFF-only watchdog
     runs-on: ubuntu-24.04
-    timeout-minutes: 47
+    timeout-minutes: 95
     permissions:
       contents: read
       actions: read
