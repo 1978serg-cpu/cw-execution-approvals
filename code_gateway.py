@@ -25,6 +25,12 @@ ORIGINAL_MARKER = "cw-issue129-code-package-consumed"
 RECOVERY1_MARKER = "cw-issue129-code-recovery1-consumed"
 RECOVERY2_MARKER = "cw-issue129-code-recovery2-consumed"
 MARKER = "cw-issue129-code-recovery3-consumed"
+ACCELERATED_MARKER = "cw-issue129-accelerated1-consumed"
+ACCELERATED_WORK = "c0aee570e2be1974a8290b7e959ec3c7fc2944d2a3abf8452a7f650773b87a7b"
+ACCELERATED_PACKAGE = "issue129-20261022-accelerated"
+RETAINED_FINAL_HEAD = "b8d2bec4e8df01ba6cab64e2a4175b863164dac3"
+RECOVERY3_SOURCE = "37d3843ad1383f85739a68735133d0125bcbe6ba"
+RECOVERY3_PUBLIC = "1219d1ef32b38db3f0b453fe96c9fda2c9777891"
 ORIGINAL_PUBLIC_SHA = "ca40f15b187935a7ed001b161a9fae4263cd55e0"
 ORIGINAL_SOURCE_SHA = "0ce91af5f558942e271d06416eb14ded9a99142a"
 ORIGINAL_WORK_ID = "ba394f0b88edbc372f360496990d02fa77b8d33f587ec9f051a20822b1249c1c"
@@ -90,9 +96,11 @@ def context(environment):
     for name in ("GITHUB_SHA", "CW_SOURCE_SHA"):
         require(re.fullmatch("[a-f0-9]{40}", values[name]))
     require(re.fullmatch("[a-f0-9]{64}", values["CW_WORK_ID"])
-            and values["CW_WORK_ID"] == RECOVERY_WORK_ID
+            and values["CW_WORK_ID"] in (RECOVERY_WORK_ID, ACCELERATED_WORK)
             and values["CW_SOURCE_SHA"] not in (ORIGINAL_SOURCE_SHA, RECOVERY1_SOURCE_SHA, RECOVERY2_SOURCE_SHA)
             and re.fullmatch("[1-9][0-9]{0,19}", values["GITHUB_RUN_ID"]))
+    if values["CW_WORK_ID"] == ACCELERATED_WORK:
+        require(values["CW_SOURCE_SHA"] != RECOVERY3_SOURCE)
     return values
 
 
@@ -101,7 +109,7 @@ def rows(document, name):
     return document[name]
 
 
-def source_preflight(call, token, source_sha):
+def source_preflight(call, token, source_sha, *, accelerated=False):
     print("CODE_GATEWAY_READ_SOURCE_IDENTITY", flush=True)
     repository = call(SOURCE, "GET", "", token)
     require(repository.get("full_name") == SOURCE and repository.get("id") == SOURCE_ID
@@ -112,18 +120,31 @@ def source_preflight(call, token, source_sha):
     print("CODE_GATEWAY_READ_BOTH_OFF_FLAGS", flush=True)
     require(all(read_gate(call, token, name) == "false" for name in (PAID, CODE)))
     print("CODE_GATEWAY_READ_RETAINED_PACKAGE_BUDGET", flush=True)
-    file = call(SOURCE, "GET", "contents/package-budget.json?ref=cw-issue129-budget", token)
+    if accelerated:
+        retained = call(SOURCE, "GET", "git/ref/heads/cw-issue129-budget", token)
+        require(retained.get("ref") == "refs/heads/cw-issue129-budget"
+                and retained.get("object", {}).get("sha") == RETAINED_FINAL_HEAD)
+    file = call(SOURCE, "GET", "contents/package-budget.json?ref="
+                + ("cw-issue129-accelerated-budget" if accelerated else "cw-issue129-budget"), token)
     require(file.get("type") == "file" and file.get("encoding") == "base64" and file.get("size", 999999) <= 65536)
     budget = json.loads(base64.b64decode(file["content"], validate=False), object_pairs_hook=unique)
-    require(hashlib.sha256(json.dumps(budget, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
-            == RETAINED_BUDGET_SHA256)
+    if accelerated:
+        require(type(budget) is dict and set(budget) == {"version", "package", "cap_cents", "max_requests",
+            "revision", "transition_id", "entries"} and type(budget["version"]) is int and budget["version"] == 2
+            and budget["package"] == ACCELERATED_PACKAGE and type(budget["cap_cents"]) is int and budget["cap_cents"] == 5000
+            and type(budget["max_requests"]) is int and budget["max_requests"] == 100
+            and type(budget["revision"]) is int and budget["revision"] == 0 and budget["entries"] == []
+            and type(budget["transition_id"]) is str and re.fullmatch("[a-f0-9]{32}", budget["transition_id"]))
+    else:
+        require(hashlib.sha256(json.dumps(budget, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+                == RETAINED_BUDGET_SHA256)
     for workflow in (CONTROLLER, "gh-aw-code-worker.lock.yml", "gh-aw-worker-probe.lock.yml", "gh-aw-dispatcher-probe.lock.yml"):
         print("CODE_GATEWAY_CHECK_IDLE_" + workflow.replace(".yml", "").replace(".lock", "").replace("-", "_").upper(), flush=True)
         history = rows(call(SOURCE, "GET", "actions/workflows/" + workflow + "/runs?per_page=50", token), "workflow_runs")
         require(not any(run.get("status") in LIVE for run in history))
 
 
-def predecessor(call, source_token, public_token):
+def predecessor(call, source_token, public_token, *, accelerated=False):
     """Read positive terminal evidence; retain all three consumed attempt markers.
 
     The source controller independently authenticates the cancelled Claim and
@@ -163,6 +184,19 @@ def predecessor(call, source_token, public_token):
          "gh-aw/work-queue/" + RECOVERY2_SOURCE_SHA, "gh-aw-code-worker.lock.yml", 41898282,
          "gh-aw work-queue d_1ccd2e9191760f194efbb0dcd269965ba78292b77d234371dd958ab39d823ae0_1"),
     )
+    if accelerated:
+        marker = call(PUBLIC, "GET", "git/ref/heads/" + MARKER, public_token)
+        require(type(marker) is dict and marker.get("ref") == "refs/heads/" + MARKER
+                and marker.get("object", {}).get("sha") == RECOVERY3_PUBLIC)
+        expected += (
+            (PUBLIC, PUBLIC_ID, public_token, "39877788233", RECOVERY3_PUBLIC, "main", "code-gateway.yml", OWNER_ID,
+             "CW issue129 code " + RECOVERY_WORK_ID),
+            (SOURCE, SOURCE_ID, source_token, "39877875874", RECOVERY3_SOURCE, BRANCH, CONTROLLER, OWNER_ID,
+             "CW issue129 launch " + RECOVERY_WORK_ID),
+            (SOURCE, SOURCE_ID, source_token, "39877972752", RECOVERY3_SOURCE, "gh-aw/work-queue/" + RECOVERY3_SOURCE,
+             "gh-aw-code-worker.lock.yml", 41898282,
+             "gh-aw work-queue d_3f8f143cf17f300c2f5859459fdfc046958c8037f701e33ca50fb8957aaa0602_1"),
+        )
     for repository, repository_id, token, run_id, sha, branch, workflow, actor, title in expected:
         run = call(repository, "GET", "actions/runs/" + run_id + "/attempts/1", token)
         require(type(run) is dict and str(run.get("id")) == run_id
@@ -251,35 +285,39 @@ def arm_watchdog(call, token, own, *, clock, monotonic, pause):
 
 def execute(environment, *, call=api, clock=time.time, monotonic=time.monotonic, pause=time.sleep):
     own = context(environment)
+    accelerated = own["CW_WORK_ID"] == ACCELERATED_WORK
+    marker_name = ACCELERATED_MARKER if accelerated else MARKER
+    launch_mode = "accelerated_launch" if accelerated else "launch"
     preflight_only = environment.get("CW_PREFLIGHT_ONLY", "false")
     require(preflight_only in ("true", "false"))
     source_token, public_token = environment["CW_GATEWAY_OPERATOR_TOKEN"], environment["GH_PUBLIC_TOKEN"]
     print("CODE_GATEWAY_VERIFY_APPROVAL", flush=True)
     own_run = approval(call, public_token, own, int(clock()))
     print("CODE_GATEWAY_VERIFY_SOURCE_OFF_AND_RETAINED_BUDGET", flush=True)
-    source_preflight(call, source_token, own["CW_SOURCE_SHA"])
+    source_preflight(call, source_token, own["CW_SOURCE_SHA"], accelerated=accelerated)
     print("CODE_GATEWAY_VERIFY_FIXED_TERMINAL_PREDECESSOR", flush=True)
-    predecessor(call, source_token, public_token)
-    require(call(PUBLIC, "GET", "git/ref/heads/" + MARKER, public_token) is None)
+    predecessor(call, source_token, public_token, accelerated=accelerated)
+    require(call(PUBLIC, "GET", "git/ref/heads/" + marker_name, public_token) is None)
     if preflight_only == "true":
         return "CODE_GATEWAY_PREFLIGHT_VERIFIED_NO_DISPATCH_NO_SPEND"
     # From here any uncertain outcome consumes the attempt. Never repeat a POST.
     try:
         print("CODE_GATEWAY_CONSUME_ONCE_AND_DISPATCH", flush=True)
-        call(PUBLIC, "POST", "git/refs", public_token, {"ref": "refs/heads/" + MARKER, "sha": own["GITHUB_SHA"]})
-        marker = call(PUBLIC, "GET", "git/ref/heads/" + MARKER, public_token)
-        require(marker.get("ref") == "refs/heads/" + MARKER and marker.get("object", {}).get("sha") == own["GITHUB_SHA"])
+        call(PUBLIC, "POST", "git/refs", public_token, {"ref": "refs/heads/" + marker_name, "sha": own["GITHUB_SHA"]})
+        marker = call(PUBLIC, "GET", "git/ref/heads/" + marker_name, public_token)
+        require(marker.get("ref") == "refs/heads/" + marker_name and marker.get("object", {}).get("sha") == own["GITHUB_SHA"])
         started = int(clock())
         call(SOURCE, "POST", "actions/workflows/" + CONTROLLER + "/dispatches", source_token,
-            {"ref": BRANCH, "inputs": {"mode": "launch", "work_id": own["CW_WORK_ID"],
+            {"ref": BRANCH, "inputs": {"mode": launch_mode, "work_id": own["CW_WORK_ID"],
                 "gateway_run_id": own["GITHUB_RUN_ID"], "gateway_sha": own["GITHUB_SHA"]}})
-        source = discover(call, source_token, SOURCE, CONTROLLER, "CW issue129 launch " + own["CW_WORK_ID"],
+        source = discover(call, source_token, SOURCE, CONTROLLER, "CW issue129 " + launch_mode + " " + own["CW_WORK_ID"],
             own["CW_SOURCE_SHA"], BRANCH, started, clock=clock, monotonic=monotonic, pause=pause)
         issued = int(clock())
-        lease = {"version": 1, "package": "issue129-20261022", "source_sha": own["CW_SOURCE_SHA"],
+        lease = {"version": 1, "package": ACCELERATED_PACKAGE if accelerated else "issue129-20261022", "source_sha": own["CW_SOURCE_SHA"],
             "work_id": own["CW_WORK_ID"], "controller_run_id": str(source["id"]),
             "gateway_run_id": own["GITHUB_RUN_ID"], "gateway_sha": own["GITHUB_SHA"], "issued_at": issued,
-            "expires_at": created_at(own_run) + TTL_SECONDS, "cap_cents": 1000, "max_requests": 10}
+            "expires_at": created_at(own_run) + TTL_SECONDS, "cap_cents": 5000 if accelerated else 1000,
+            "max_requests": 100 if accelerated else 10}
         public_parent(lease, own_run, now=issued)
         source_parent(lease, source, now=issued, source_sha=own["CW_SOURCE_SHA"], work_id=own["CW_WORK_ID"])
         old = call(SOURCE, "GET", "actions/variables/" + LEASE, source_token)
@@ -323,3 +361,4 @@ if __name__ == "__main__":
         print("BOTH_EXECUTION_GATES_OFF_VERIFIED")
     except Exception:
         raise SystemExit("CODE_GATEWAY_DENIED_OR_UNKNOWN_NO_RETRY") from None
+
