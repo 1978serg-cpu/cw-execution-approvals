@@ -781,5 +781,73 @@ class AcceleratedFifthTests(unittest.TestCase):
             self.assertTrue(all(c[1] == "GET" for c in f.calls))
 
 
+class AcceleratedSixthFixture(AcceleratedFifthFixture):
+    def __init__(self):
+        super().__init__()
+        self.work_id = gateway.ACCELERATED6_WORK; self.environment["CW_WORK_ID"] = self.work_id
+        self.public_run["display_title"] = "CW issue129 code " + self.work_id
+        self.source_run["display_title"] = "CW issue129 accelerated_launch " + self.work_id
+        self.fifth_consumed = {"ref": "refs/heads/" + gateway.ACCELERATED5_MARKER,
+            "object": {"sha": gateway.ACCELERATED5_PUBLIC}}
+        self.accelerated_head = gateway.RETAINED_ACCELERATED6_HEAD
+        self.accelerated_budget["entries"] += [
+            {"state": "FINALIZED", "settled_cents": 1, "ceiling_cents": 1100, "sequence": 1},
+            {"state": "CONSUMED", "ceiling_cents": 1100, "sequence": 2}]
+        self.accelerated_budget.update(revision=16, cap_cents=7000)
+        self.synthetic_hash = hashlib.sha256(json.dumps(self.accelerated_budget, sort_keys=True,
+            separators=(",", ":"), ensure_ascii=True).encode()).hexdigest()
+        for repository, repository_id, run_id, sha, branch, workflow, actor, title, conclusion in (
+            (gateway.PUBLIC, gateway.PUBLIC_ID, "39899055795", gateway.ACCELERATED5_PUBLIC, "main", "code-gateway.yml", gateway.OWNER_ID,
+             "CW issue129 code " + gateway.ACCELERATED5_WORK, "cancelled"),
+            (gateway.SOURCE, gateway.SOURCE_ID, "39899158430", gateway.ACCELERATED5_SOURCE, gateway.BRANCH, gateway.CONTROLLER, gateway.OWNER_ID,
+             "CW issue129 accelerated_launch " + gateway.ACCELERATED5_WORK, "failure"),
+            (gateway.SOURCE, gateway.SOURCE_ID, "39899248735", gateway.ACCELERATED5_SOURCE, "gh-aw/work-queue/" + gateway.ACCELERATED5_SOURCE,
+             "gh-aw-code-worker.lock.yml", 41898282,
+             "gh-aw work-queue d_86912363fb82d8a127a4883e12632488bf62b5933b2634b305ebb80cbc849a0b_1", "cancelled"),
+        ):
+            run = self.run(int(run_id), repository, repository_id, sha, branch, workflow)
+            run.update(status="completed", conclusion=conclusion, display_title=title,
+                actor={"id": actor}, triggering_actor={"id": actor}); self.previous[run_id] = run
+
+    def execute(self):
+        with mock.patch.object(gateway, "RETAINED_ACCELERATED6_SHA256", self.synthetic_hash):
+            return super().execute()
+
+    def call(self, repository, method, path, token, body=None):
+        if repository == gateway.PUBLIC and method == "GET" and path in (
+                "git/ref/heads/" + gateway.ACCELERATED5_MARKER, "git/ref/heads/" + gateway.ACCELERATED6_MARKER):
+            self.calls.append((repository, method, path, copy.deepcopy(body)))
+            return copy.deepcopy(self.fifth_consumed if path.endswith(gateway.ACCELERATED5_MARKER) else self.marker)
+        return super().call(repository, method, path, token, body)
+
+
+class AcceleratedSixthTests(unittest.TestCase):
+    def test_sixth_work_preserves_history_and_issues_only_the_approved_70_100_lease(self):
+        f = AcceleratedSixthFixture(); budget = copy.deepcopy(f.accelerated_budget)
+        markers = copy.deepcopy([f.first_consumed, f.second_consumed, f.third_consumed, f.fourth_consumed, f.fifth_consumed])
+        self.assertEqual(f.execute(), "CODE_CONTROLLER_COMPLETED_NATIVE_RESULT_REQUIRES_READBACK")
+        self.assertEqual(f.marker["ref"], "refs/heads/" + gateway.ACCELERATED6_MARKER)
+        self.assertEqual(f.accelerated_budget, budget)
+        self.assertEqual([f.first_consumed, f.second_consumed, f.third_consumed, f.fourth_consumed, f.fifth_consumed], markers)
+        issued = json.loads(f.lease)
+        self.assertEqual((issued["cap_cents"], issued["max_requests"]), (7000, 100))
+        self.assertEqual(list(f.gates.values()), ["false", "false"])
+
+    def test_sixth_work_denies_refunds_reset_unfinished_attempt_and_cap_override(self):
+        for mutate in (lambda f: setattr(f, "fifth_consumed", None),
+                       lambda f: f.accelerated_budget.update(entries=[]),
+                       lambda f: f.accelerated_budget["entries"].pop(),
+                       lambda f: f.accelerated_budget["entries"][5].update(settled_cents=0),
+                       lambda f: f.accelerated_budget.update(cap_cents=7001),
+                       lambda f: f.accelerated_budget.update(max_requests=101),
+                       lambda f: setattr(f, "accelerated_head", "a" * 40),
+                       lambda f: f.previous["39899248735"].update(conclusion="success"),
+                       lambda f: f.previous["39899158430"].update(status="in_progress"),
+                       lambda f: f.environment.update(CW_SOURCE_SHA=gateway.ACCELERATED5_SOURCE)):
+            f = AcceleratedSixthFixture(); mutate(f)
+            with self.assertRaises(Exception): f.execute()
+            self.assertTrue(all(c[1] == "GET" for c in f.calls))
+
+
 if __name__ == "__main__":
     unittest.main()

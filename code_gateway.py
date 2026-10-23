@@ -36,6 +36,12 @@ ACCELERATED4_MARKER = "cw-issue129-accelerated4-consumed"
 ACCELERATED4_WORK = "7ab4624b2453ff8dbf301193e86d8e578a157e23cfcb5a71c7ce6d7095f2deb0"
 ACCELERATED5_MARKER = "cw-issue129-accelerated5-consumed"
 ACCELERATED5_WORK = "60578e469bef7b76fddbdbbe84485fbd3c22bffd215e2337f6e7281ca49357c0"
+ACCELERATED6_MARKER = "cw-issue129-accelerated6-consumed"
+ACCELERATED6_WORK = "f03bec47b327a7180c8a6cf3daf9b3c3dd570dbfa37885236ea3876791143c2f"
+ACCELERATED5_SOURCE = "45d7d14ed4825e8e4048261b0c4ef8f03b9c718b"
+ACCELERATED5_PUBLIC = "df12cc9ec9c58d44966adaa764f2574543b4093f"
+RETAINED_ACCELERATED6_HEAD = "2556eb92b5aadc105ed9984f2da3c20939bf6d81"
+RETAINED_ACCELERATED6_SHA256 = "ca07fe94be18bcd1c2e416d03d09636bcfd74f274cca40acdea01b5bfb2d88bb"
 ACCELERATED4_SOURCE = "6e99bcce50019e887c10597d315e0cc2d27aff6e"
 ACCELERATED4_PUBLIC = "c1538fc491b19d085fc88685ced06c0fbb9bc49b"
 RETAINED_ACCELERATED5_HEAD = "825ab5d5c5eddac6e56b245c49d9b37d9b6e8f4c"
@@ -116,19 +122,21 @@ def context(environment):
     for name in ("GITHUB_SHA", "CW_SOURCE_SHA"):
         require(re.fullmatch("[a-f0-9]{40}", values[name]))
     require(re.fullmatch("[a-f0-9]{64}", values["CW_WORK_ID"])
-            and values["CW_WORK_ID"] in (RECOVERY_WORK_ID, ACCELERATED_WORK, ACCELERATED2_WORK, ACCELERATED3_WORK, ACCELERATED4_WORK, ACCELERATED5_WORK)
+            and values["CW_WORK_ID"] in (RECOVERY_WORK_ID, ACCELERATED_WORK, ACCELERATED2_WORK, ACCELERATED3_WORK, ACCELERATED4_WORK, ACCELERATED5_WORK, ACCELERATED6_WORK)
             and values["CW_SOURCE_SHA"] not in (ORIGINAL_SOURCE_SHA, RECOVERY1_SOURCE_SHA, RECOVERY2_SOURCE_SHA)
             and re.fullmatch("[1-9][0-9]{0,19}", values["GITHUB_RUN_ID"]))
-    if values["CW_WORK_ID"] in (ACCELERATED_WORK, ACCELERATED2_WORK, ACCELERATED3_WORK, ACCELERATED4_WORK, ACCELERATED5_WORK):
+    if values["CW_WORK_ID"] in (ACCELERATED_WORK, ACCELERATED2_WORK, ACCELERATED3_WORK, ACCELERATED4_WORK, ACCELERATED5_WORK, ACCELERATED6_WORK):
         require(values["CW_SOURCE_SHA"] != RECOVERY3_SOURCE)
-    if values["CW_WORK_ID"] in (ACCELERATED2_WORK, ACCELERATED3_WORK, ACCELERATED4_WORK, ACCELERATED5_WORK):
+    if values["CW_WORK_ID"] in (ACCELERATED2_WORK, ACCELERATED3_WORK, ACCELERATED4_WORK, ACCELERATED5_WORK, ACCELERATED6_WORK):
         require(values["CW_SOURCE_SHA"] != ACCELERATED1_SOURCE)
-    if values["CW_WORK_ID"] in (ACCELERATED3_WORK, ACCELERATED4_WORK, ACCELERATED5_WORK):
+    if values["CW_WORK_ID"] in (ACCELERATED3_WORK, ACCELERATED4_WORK, ACCELERATED5_WORK, ACCELERATED6_WORK):
         require(values["CW_SOURCE_SHA"] != ACCELERATED2_SOURCE)
-    if values["CW_WORK_ID"] in (ACCELERATED4_WORK, ACCELERATED5_WORK):
+    if values["CW_WORK_ID"] in (ACCELERATED4_WORK, ACCELERATED5_WORK, ACCELERATED6_WORK):
         require(values["CW_SOURCE_SHA"] != ACCELERATED3_SOURCE)
-    if values["CW_WORK_ID"] == ACCELERATED5_WORK:
+    if values["CW_WORK_ID"] in (ACCELERATED5_WORK, ACCELERATED6_WORK):
         require(values["CW_SOURCE_SHA"] != ACCELERATED4_SOURCE)
+    if values["CW_WORK_ID"] == ACCELERATED6_WORK:
+        require(values["CW_SOURCE_SHA"] != ACCELERATED5_SOURCE)
     return values
 
 
@@ -137,7 +145,7 @@ def rows(document, name):
     return document[name]
 
 
-def source_preflight(call, token, source_sha, *, accelerated=False, continuation=False, fifth=False):
+def source_preflight(call, token, source_sha, *, accelerated=False, continuation=False, fifth=False, sixth=False):
     print("CODE_GATEWAY_READ_SOURCE_IDENTITY", flush=True)
     repository = call(SOURCE, "GET", "", token)
     require(repository.get("full_name") == SOURCE and repository.get("id") == SOURCE_ID
@@ -158,10 +166,10 @@ def source_preflight(call, token, source_sha, *, accelerated=False, continuation
     budget = json.loads(base64.b64decode(file["content"], validate=False), object_pairs_hook=unique)
     if accelerated and continuation:
         require(hashlib.sha256(json.dumps(budget, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()).hexdigest()
-                == (RETAINED_ACCELERATED5_SHA256 if fifth else RETAINED_ACCELERATED_SHA256))
+                == (RETAINED_ACCELERATED6_SHA256 if sixth else RETAINED_ACCELERATED5_SHA256 if fifth else RETAINED_ACCELERATED_SHA256))
         tip = call(SOURCE, "GET", "git/ref/heads/cw-issue129-accelerated-budget", token)
         require(tip.get("ref") == "refs/heads/cw-issue129-accelerated-budget"
-                and tip.get("object", {}).get("sha") == (RETAINED_ACCELERATED5_HEAD if fifth else RETAINED_ACCELERATED_HEAD))
+                and tip.get("object", {}).get("sha") == (RETAINED_ACCELERATED6_HEAD if sixth else RETAINED_ACCELERATED5_HEAD if fifth else RETAINED_ACCELERATED_HEAD))
     elif accelerated:
         require(type(budget) is dict and set(budget) == {"version", "package", "cap_cents", "max_requests",
             "revision", "transition_id", "entries"} and type(budget["version"]) is int and budget["version"] == 2
@@ -178,7 +186,7 @@ def source_preflight(call, token, source_sha, *, accelerated=False, continuation
         require(not any(run.get("status") in LIVE for run in history))
 
 
-def predecessor(call, source_token, public_token, *, accelerated=False, successor=False, third=False, fourth=False, fifth=False):
+def predecessor(call, source_token, public_token, *, accelerated=False, successor=False, third=False, fourth=False, fifth=False, sixth=False):
     """Read positive terminal evidence; retain all three consumed attempt markers.
 
     The source controller independently authenticates the cancelled Claim and
@@ -292,6 +300,21 @@ def predecessor(call, source_token, public_token, *, accelerated=False, successo
              "gh-aw work-queue d_a8960252d62ea4ca50e429d9f57cfe14582832fcae40ce1b0e7093146cb408f0_1"),
         )
         outcomes.update({"39895920569": "cancelled", "39896107117": "cancelled"})
+    if sixth:
+        require(fifth)
+        marker = call(PUBLIC, "GET", "git/ref/heads/" + ACCELERATED5_MARKER, public_token)
+        require(type(marker) is dict and marker.get("ref") == "refs/heads/" + ACCELERATED5_MARKER
+                and marker.get("object", {}).get("sha") == ACCELERATED5_PUBLIC)
+        expected += (
+            (PUBLIC, PUBLIC_ID, public_token, "39899055795", ACCELERATED5_PUBLIC, "main", "code-gateway.yml", OWNER_ID,
+             "CW issue129 code " + ACCELERATED5_WORK),
+            (SOURCE, SOURCE_ID, source_token, "39899158430", ACCELERATED5_SOURCE, BRANCH, CONTROLLER, OWNER_ID,
+             "CW issue129 accelerated_launch " + ACCELERATED5_WORK),
+            (SOURCE, SOURCE_ID, source_token, "39899248735", ACCELERATED5_SOURCE, "gh-aw/work-queue/" + ACCELERATED5_SOURCE,
+             "gh-aw-code-worker.lock.yml", 41898282,
+             "gh-aw work-queue d_86912363fb82d8a127a4883e12632488bf62b5933b2634b305ebb80cbc849a0b_1"),
+        )
+        outcomes.update({"39899055795": "cancelled", "39899248735": "cancelled"})
     for repository, repository_id, token, run_id, sha, branch, workflow, actor, title in expected:
         run = call(repository, "GET", "actions/runs/" + run_id + "/attempts/1", token)
         require(type(run) is dict and str(run.get("id")) == run_id
@@ -380,12 +403,13 @@ def arm_watchdog(call, token, own, *, clock, monotonic, pause):
 
 def execute(environment, *, call=api, clock=time.time, monotonic=time.monotonic, pause=time.sleep):
     own = context(environment)
-    fifth = own["CW_WORK_ID"] == ACCELERATED5_WORK
-    fourth = own["CW_WORK_ID"] in (ACCELERATED4_WORK, ACCELERATED5_WORK)
-    third = own["CW_WORK_ID"] in (ACCELERATED3_WORK, ACCELERATED4_WORK, ACCELERATED5_WORK)
-    successor = own["CW_WORK_ID"] in (ACCELERATED2_WORK, ACCELERATED3_WORK, ACCELERATED4_WORK, ACCELERATED5_WORK)
-    accelerated = own["CW_WORK_ID"] in (ACCELERATED_WORK, ACCELERATED2_WORK, ACCELERATED3_WORK, ACCELERATED4_WORK, ACCELERATED5_WORK)
-    marker_name = ACCELERATED5_MARKER if fifth else ACCELERATED4_MARKER if fourth else ACCELERATED3_MARKER if third else ACCELERATED2_MARKER if successor else ACCELERATED_MARKER if accelerated else MARKER
+    sixth = own["CW_WORK_ID"] == ACCELERATED6_WORK
+    fifth = own["CW_WORK_ID"] in (ACCELERATED5_WORK, ACCELERATED6_WORK)
+    fourth = own["CW_WORK_ID"] in (ACCELERATED4_WORK, ACCELERATED5_WORK, ACCELERATED6_WORK)
+    third = own["CW_WORK_ID"] in (ACCELERATED3_WORK, ACCELERATED4_WORK, ACCELERATED5_WORK, ACCELERATED6_WORK)
+    successor = own["CW_WORK_ID"] in (ACCELERATED2_WORK, ACCELERATED3_WORK, ACCELERATED4_WORK, ACCELERATED5_WORK, ACCELERATED6_WORK)
+    accelerated = own["CW_WORK_ID"] in (ACCELERATED_WORK, ACCELERATED2_WORK, ACCELERATED3_WORK, ACCELERATED4_WORK, ACCELERATED5_WORK, ACCELERATED6_WORK)
+    marker_name = ACCELERATED6_MARKER if sixth else ACCELERATED5_MARKER if fifth else ACCELERATED4_MARKER if fourth else ACCELERATED3_MARKER if third else ACCELERATED2_MARKER if successor else ACCELERATED_MARKER if accelerated else MARKER
     launch_mode = "accelerated_launch" if accelerated else "launch"
     preflight_only = environment.get("CW_PREFLIGHT_ONLY", "false")
     require(preflight_only in ("true", "false"))
@@ -393,9 +417,9 @@ def execute(environment, *, call=api, clock=time.time, monotonic=time.monotonic,
     print("CODE_GATEWAY_VERIFY_APPROVAL", flush=True)
     own_run = approval(call, public_token, own, int(clock()))
     print("CODE_GATEWAY_VERIFY_SOURCE_OFF_AND_RETAINED_BUDGET", flush=True)
-    source_preflight(call, source_token, own["CW_SOURCE_SHA"], accelerated=accelerated, continuation=fourth, fifth=fifth)
+    source_preflight(call, source_token, own["CW_SOURCE_SHA"], accelerated=accelerated, continuation=fourth, fifth=fifth, sixth=sixth)
     print("CODE_GATEWAY_VERIFY_FIXED_TERMINAL_PREDECESSOR", flush=True)
-    predecessor(call, source_token, public_token, accelerated=accelerated, successor=successor, third=third, fourth=fourth, fifth=fifth)
+    predecessor(call, source_token, public_token, accelerated=accelerated, successor=successor, third=third, fourth=fourth, fifth=fifth, sixth=sixth)
     require(call(PUBLIC, "GET", "git/ref/heads/" + marker_name, public_token) is None)
     if preflight_only == "true":
         return "CODE_GATEWAY_PREFLIGHT_VERIFIED_NO_DISPATCH_NO_SPEND"
@@ -415,7 +439,7 @@ def execute(environment, *, call=api, clock=time.time, monotonic=time.monotonic,
         lease = {"version": 1, "package": ACCELERATED_PACKAGE if accelerated else "issue129-20261022", "source_sha": own["CW_SOURCE_SHA"],
             "work_id": own["CW_WORK_ID"], "controller_run_id": str(source["id"]),
             "gateway_run_id": own["GITHUB_RUN_ID"], "gateway_sha": own["GITHUB_SHA"], "issued_at": issued,
-            "expires_at": created_at(own_run) + TTL_SECONDS, "cap_cents": 5000 if accelerated else 1000,
+            "expires_at": created_at(own_run) + TTL_SECONDS, "cap_cents": 7000 if sixth else 5000 if accelerated else 1000,
             "max_requests": 100 if accelerated else 10}
         public_parent(lease, own_run, now=issued)
         source_parent(lease, source, now=issued, source_sha=own["CW_SOURCE_SHA"], work_id=own["CW_WORK_ID"])

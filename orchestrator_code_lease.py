@@ -52,7 +52,8 @@ def decode(value, *, now):
             and 0 < lease["expires_at"] - lease["issued_at"] <= TTL_SECONDS)
     require(type(lease["cap_cents"]) is int and type(lease["max_requests"]) is int
             and (lease["package"], lease["cap_cents"], lease["max_requests"]) in (
-                ("issue129-20261022", 1000, 10), ("issue129-20261022-accelerated", 5000, 100)))
+                ("issue129-20261022", 1000, 10), ("issue129-20261022-accelerated", 5000, 100),
+                ("issue129-20261022-accelerated", 7000, 100)))
     return lease
 
 

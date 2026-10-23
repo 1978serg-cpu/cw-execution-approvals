@@ -241,6 +241,15 @@ class AcceleratedLeaseTests(unittest.TestCase):
             self.assertEqual(f.guard(), "CODE_ORPHAN_DISABLED")
             self.assertEqual(list(f.gates.values()), ["false", "false"])
 
+    def test_authorized_70_dollar_lease_retains_independent_shutdown_and_request_limit(self):
+        f = self.accelerated(); f.doc["cap_cents"] = 7000
+        self.assertEqual(f.guard(), "CODE_LEASE_WITHIN_TTL")
+        f.after_pause = lambda: f.parent.update(status="completed")
+        self.assertEqual(f.watch(), "CODE_LEASE_TERMINAL_EXPIRED_OR_UNVERIFIABLE_OFF")
+        self.assertEqual(list(f.gates.values()), ["false", "false"])
+        f = self.accelerated(); f.doc["cap_cents"] = 7001
+        self.assertEqual(f.guard(), "CODE_ORPHAN_DISABLED")
+
 
 if __name__ == "__main__":
     unittest.main()
