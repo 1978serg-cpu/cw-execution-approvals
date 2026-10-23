@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import orchestrator_code_lease as lease
 from test_orchestrator_code_lease import Fixture, NOW
+from test_orchestrator_component_lease import ComponentFixture
 
 ROOT = Path(__file__).parent
 WORKFLOW = ROOT / ".github/workflows/one-shot-gateway.yml"
@@ -69,6 +70,35 @@ class GatewayTests(unittest.TestCase):
         status, output = self.run_program(f, mode="scheduled_off")
         self.assertEqual(status, 0); self.assertIn("SCHEDULED_GATE_HEALTHY_OFF", output)
         self.assertTrue(all(call[1] == "GET" for call in f.calls))
+
+    def test_real_scheduled_program_preserves_verified_component_parents(self):
+        f = ComponentFixture()
+        status, output = self.run_program(f, mode="scheduled_off")
+        self.assertEqual(status, 0)
+        self.assertIn("COMPONENT_LEASE_WITHIN_TTL", output)
+        self.assertTrue(all(call[1] == "GET" for call in f.calls))
+
+    def test_real_component_watch_stops_when_source_controller_finishes(self):
+        f = ComponentFixture(); f.after_pause = lambda: f.source.update(status="completed", conclusion="failure")
+        status, output = self.run_program(f, mode="component_watch")
+        self.assertEqual(status, 0)
+        self.assertIn("INDEPENDENT_COMPONENT_OFF_WATCHDOG_ACTIVE", output)
+        self.assertIn("COMPONENT_PARENT_OR_LEASE_INVALID_OFF", output)
+        self.assertEqual(f.gates, {lease.PAID: "false", lease.CODE: "false"})
+
+    def test_real_component_watch_cannot_follow_another_gateway(self):
+        f = ComponentFixture()
+        status, output = self.run_program(f, mode="component_watch", parent="457")
+        self.assertEqual(status, 0)
+        self.assertIn("COMPONENT_PARENT_OR_LEASE_INVALID_OFF", output)
+        self.assertEqual(f.gates, {lease.PAID: "false", lease.CODE: "false"})
+
+    def test_real_scheduled_program_disables_expired_component_with_no_valid_legacy_lease(self):
+        f = ComponentFixture(); f.doc["expires_at"] = NOW
+        status, output = self.run_program(f, mode="scheduled_off")
+        self.assertEqual(status, 0)
+        self.assertIn("CODE_ORPHAN_DISABLED", output)
+        self.assertEqual(f.gates, {lease.PAID: "false", lease.CODE: "false"})
 
     def test_historical_paid_pilot_and_consumed_marker_program_are_byte_identical(self):
         pilot = WORKFLOW.read_text().split("\n  pilot:\n", 1)[1]
