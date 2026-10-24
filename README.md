@@ -26,6 +26,13 @@ Offline transport simulations verify these boundaries. They do not establish
 a successful live four-worker graph or a native Result. Run a fresh OFF selftest
 at the exact public revision before any protected launch.
 
+An owner review older than the existing five-minute parent window stops before
+any order marker, controller dispatch or spend. An exact audited prelaunch
+failure may receive one separate recovery marker only while its original
+terminal runs, source, queue and full budget history remain unchanged. The
+original marker and all costs remain retained; this does not retry an unknown
+dispatch or extend a lease.
+
 ## Historical Phase 0 setup notes
 
 Minimal, public, owner-controlled **approval gate**, currently in **Phase 0: NO SPEND / NO MODEL**.
