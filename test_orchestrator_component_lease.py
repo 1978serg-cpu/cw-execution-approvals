@@ -11,7 +11,7 @@ class ComponentFixture(Fixture):
     def __init__(self):
         super().__init__()
         self.doc.pop("work_id")
-        self.doc.update(package="issue129-20261022-accelerated", cap_cents=15000, max_requests=500,
+        self.doc.update(package="issue129-20261022-accelerated", cap_cents=17500, max_requests=600,
             approval_ref="c" * 40, work_order_sha256="d" * 64, spec_sha256="e" * 64,
             issued_at=NOW, expires_at=NOW + component.TTL_SECONDS)
         self.parent["created_at"] = stamp(NOW)
@@ -53,7 +53,7 @@ class ComponentLeaseTests(unittest.TestCase):
 
     def test_closed_schema_and_exact_types(self):
         f = ComponentFixture()
-        faults = [("version", True), ("cap_cents", 15000.0), ("cap_cents", 15001),
+        faults = [("version", True), ("cap_cents", 17500.0), ("cap_cents", 17501),
             ("max_requests", True), ("issued_at", NOW + 1), ("expires_at", NOW + 5401),
             ("approval_ref", f.doc["source_sha"]), ("gateway_run_id", "01"),
             ("source_sha", "A" * 40), ("work_order_sha256", "d" * 63), ("extra", 1)]
