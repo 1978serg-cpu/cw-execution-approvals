@@ -23,8 +23,8 @@ CHECKPOINT = "6059deec7553c7f2a665f1e24c2b4fcde92e4c89"
 BUDGET = "cw-issue129-accelerated-budget"
 SHA = re.compile("[a-f0-9]{40}")
 HASH = re.compile("[a-f0-9]{64}")
-# One audited pre-provider failure. The original marker is retained forever.
-# A changed queue/budget or any other order is ineligible for this recovery.
+# Audited pre-provider failures. Original markers are retained forever.
+# A changed queue/budget or any other order is ineligible for recovery.
 PRELAUNCH_RECOVERY = {
     "CW_SOURCE_SHA": "b6ef9aba11026e6cb189fba9afcf339b089b7d96",
     "CW_APPROVAL_REF": "df2ca83e58dde8104e9f08f542909417f33c323c",
@@ -34,6 +34,20 @@ PRELAUNCH_RECOVERY = {
 PRELAUNCH_GATEWAY_SHA = "cadc6489b9190cdd7977a93f72cd6a088ca06055"
 PRELAUNCH_QUEUE_SHA = "452654213ec99acd94132c56b02f591cd6e88e78"
 PRELAUNCH_BUDGET_SHA = "e0a007bb0e41aabba259d4609d1e05d8ff21cc38"
+PRELAUNCH_RECOVERIES = (
+    {"approval": PRELAUNCH_RECOVERY, "gateway_sha": PRELAUNCH_GATEWAY_SHA,
+     "queue_sha": PRELAUNCH_QUEUE_SHA, "budget_sha": PRELAUNCH_BUDGET_SHA,
+     "gateway_run_id": 40018993718, "controller_run_id": 40019128698},
+    {"approval": {
+        "CW_SOURCE_SHA": "926ab372bafb6af9000181d988a79f975aaff62e",
+        "CW_APPROVAL_REF": "650d508a43e819a76b2c279b3c57e9b4d0fb371d",
+        "CW_WORK_ORDER_SHA256": "3b3c740a020bd9c492f410cf4e14e2711a7d77549d2e35b25c4887a60ac0fc4f",
+        "CW_SPEC_SHA256": "b0402134c9e14326760630b45f930768bbf83cd31efa4bb777601681da08baea",
+     }, "gateway_sha": "5388a5e8c777253dddcb24217275794c4c93495e",
+     "queue_sha": "84a9dd97ca82b966c5bf8299b8a714bf07bf20d1",
+     "budget_sha": "780b7613b05548b883bb2b5365689410aed1760a",
+     "gateway_run_id": 40087546290, "controller_run_id": 40088701855},
+)
 
 
 def canonical(value):
@@ -204,12 +218,15 @@ def launch_marker(call, source_token, public_token, own):
     original = call(PUBLIC, "GET", "git/ref/heads/" + name, public_token)
     if original is None:
         return name
-    require(all(own.get(k) == v for k, v in PRELAUNCH_RECOVERY.items())
-        and original.get("object", {}).get("sha") == PRELAUNCH_GATEWAY_SHA)
+    matches = [record for record in PRELAUNCH_RECOVERIES
+        if all(own.get(k) == v for k, v in record["approval"].items())]
+    require(len(matches) == 1)
+    recovery = matches[0]
+    require(original.get("object", {}).get("sha") == recovery["gateway_sha"])
     for repository, token, run_id, repo_id, head, branch, workflow, title in (
-        (PUBLIC, public_token, 40018993718, lease.PUBLIC_ID, PRELAUNCH_GATEWAY_SHA, "main",
+        (PUBLIC, public_token, recovery["gateway_run_id"], lease.PUBLIC_ID, recovery["gateway_sha"], "main",
          "component-gateway.yml", "CW component order "),
-        (SOURCE, source_token, 40019128698, lease.SOURCE_ID, own["CW_SOURCE_SHA"], lease.BRANCH,
+        (SOURCE, source_token, recovery["controller_run_id"], lease.SOURCE_ID, own["CW_SOURCE_SHA"], lease.BRANCH,
          CONTROLLER, "CW component controller "),
     ):
         run = call(repository, "GET", "actions/runs/" + str(run_id), token)
@@ -222,7 +239,7 @@ def launch_marker(call, source_token, public_token, own):
             and run.get("display_title") == title + own["CW_WORK_ORDER_SHA256"]
             and run.get("event") == "workflow_dispatch"
             and all(run.get(field, {}).get("id") == lease.OWNER_ID for field in ("actor", "triggering_actor")))
-    for branch, expected in (("work-queue", PRELAUNCH_QUEUE_SHA), (BUDGET, PRELAUNCH_BUDGET_SHA)):
+    for branch, expected in (("work-queue", recovery["queue_sha"]), (BUDGET, recovery["budget_sha"])):
         ref = call(SOURCE, "GET", "git/ref/heads/" + branch, source_token)
         require(type(ref) is dict and ref.get("object", {}).get("sha") == expected)
     # Exact unchanged histories are mandatory, not merely a remaining balance.
@@ -237,6 +254,11 @@ def execute(env, *, call=api, clock=time.time, monotonic=time.monotonic, pause=t
     own = context(env)
     source_token, public_token = own["CW_GATEWAY_OPERATOR_TOKEN"], own["GH_PUBLIC_TOKEN"]
     public_run = public_approval(call, public_token, own, int(clock()))
+    # Environment review can take longer than the existing five-minute parent
+    # window. Stop before consuming the order or dispatching its controller.
+    # The original lease and source checks keep their unchanged time bounds.
+    if int(clock()) - created_at(public_run) > 300:
+        return "COMPONENT_APPROVAL_WINDOW_EXPIRED_NO_DISPATCH_NO_SPEND"
     if not source_preflight(call, source_token, own):
         return "COMPONENT_GATEWAY_BUDGET_BLOCKED_NO_DISPATCH_NO_SPEND"
     marker_name = launch_marker(call, source_token, public_token, own)
