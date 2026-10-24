@@ -112,7 +112,8 @@ class Fixture:
 class ComponentGatewayTests(unittest.TestCase):
     def test_reservation_queue_keeps_150_dollars_500_calls_and_all_retained_unknowns(self):
         retained = {**synthetic_budget(), "cap_cents":7000, "max_requests":100}
-        for cash, slots, ready in ((600,192,True),(599,192,False),(1965,229,True),(600,191,False)):
+        for cash, slots, ready in ((600,160,True),(599,160,False),(1965,229,True),
+                                   (1200,180,True),(600,159,False)):
             current = synthetic_budget()
             current["entries"].append({"state":"CONSUMED", "ceiling_cents":15000-5964-cash})
             current["entries"].extend({"state":"FINALIZED", "ceiling_cents":1, "settled_cents":0}
