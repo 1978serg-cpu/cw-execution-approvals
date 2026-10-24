@@ -86,10 +86,14 @@ class Fixture:
                 if path == "actions/workflows/" + gateway.CONTROLLER + "/runs?per_page=50": return {"workflow_runs": [self.source]}
                 if path == "actions/runs/234":
                     if self.finish_at is not None and self.now >= self.finish_at:
-                        return dict(self.source, status="completed", conclusion="success")
+                        return dict(self.source, status="completed", conclusion=self.source.get("conclusion") or "success")
                     return copy.deepcopy(self.source)
-                if path == "actions/runs/234/jobs?per_page=50": return {"jobs": [{"run_id":234,"name":"Prepare native graph while OFF", "steps":None,
-                    "status":"completed", "conclusion":"success" if self.prepared else "failure"}]}
+                if path == "actions/runs/234/jobs?per_page=50": return {"jobs": [
+                    {"run_id":234,"name":"Prepare native graph while OFF", "steps":None,
+                     "status":"completed", "conclusion":"success" if self.prepared else "failure"},
+                    {"run_id":234,"name":"Run native workers and integration", "steps":None,
+                     "status":"completed" if self.finish_at is not None and self.now >= self.finish_at else "in_progress",
+                     "conclusion":"success" if self.finish_at is not None and self.now >= self.finish_at else None}]}
         if repo == lease.PUBLIC and method == "POST":
             if path == "git/refs":
                 self.markers["git/ref/heads/" + body["ref"].removeprefix("refs/heads/")] = {"ref": body["ref"], "object": {"sha": body["sha"]}}
@@ -111,6 +115,89 @@ class Fixture:
 
 
 class ComponentGatewayTests(unittest.TestCase):
+    def test_terminal_read_races_finish_off_without_another_dispatch_or_enable(self):
+        for race in ("completed_between_reads", "off_before_run_completion", "watchdog_completed"):
+            f = Fixture(); original = f.api; triggered = False
+            def call(repo, method, path, token, body=None):
+                nonlocal triggered
+                result = original(repo, method, path, token, body)
+                if path == "actions/runs/234" and f.finish_at is not None and not triggered:
+                    triggered = True
+                    if race == "completed_between_reads":
+                        f.finish_at = f.now
+                    else:
+                        f.finish_at = f.now + 6
+                        if race == "off_before_run_completion":
+                            f.gates = dict.fromkeys(f.gates, "false")
+                        else:
+                            f.watch.update(status="completed", conclusion="success")
+                return result
+            with self.subTest(race=race), patch.object(gateway, "source_preflight", return_value=True):
+                result = gateway.execute(f.env, call=call, clock=lambda:f.now, monotonic=lambda:f.now, pause=f.pause)
+                self.assertEqual(result, "COMPONENT_CONTROLLER_SUCCEEDED_NATIVE_RESULTS_REQUIRE_READBACK")
+                self.assertEqual(f.gates, dict.fromkeys(f.gates, "false"))
+                self.assertEqual(sum(c[1] == "POST" and c[2].endswith("/dispatches") for c in f.calls), 2)
+                self.assertEqual(sum(c[1] == "PATCH" and c[3].get("value") == "true" for c in f.calls), 2)
+                shutdown = next(i for i,c in enumerate(f.calls) if c[1] == "PATCH" and c[3].get("value") == "false")
+                self.assertTrue(all(c[1] == "GET" or (c[1] == "PATCH" and c[3].get("value") == "false")
+                    for c in f.calls[shutdown:]))
+
+    def completion_fixture(self):
+        f = Fixture()
+        grant = {"version":1, "package":"issue129-20261022-accelerated", "source_sha":"a"*40,
+            "approval_ref":"c"*40, "work_order_sha256":"d"*64, "spec_sha256":"e"*64,
+            "controller_run_id":"234", "gateway_run_id":"123", "gateway_sha":"b"*40,
+            "issued_at":NOW, "expires_at":NOW+lease.TTL_SECONDS, "cap_cents":27500, "max_requests":600}
+        f.values[lease.LEASE] = {"name":lease.LEASE, "value":gateway.canonical(grant).decode()}
+        f.source.update(status="completed", conclusion="success"); f.finish_at = NOW
+        return f, grant
+
+    def test_completion_readback_authenticates_success_without_restoring_active_lease(self):
+        f, grant = self.completion_fixture()
+        self.assertIsNone(lease.active_lease(f.api, "s", "p", now=NOW))
+        result = gateway.await_controller_completion(f.api, "s", "p", grant,
+            clock=lambda:f.now, monotonic=lambda:f.now, pause=f.pause, deadline=f.now+60)
+        self.assertEqual(result, "COMPONENT_CONTROLLER_SUCCEEDED_NATIVE_RESULTS_REQUIRE_READBACK")
+        self.assertTrue(all(c[1] == "GET" for c in f.calls))
+
+    def test_completion_readback_rejects_revocation_failed_jobs_and_foreign_runs(self):
+        faults = ("failure", "cancelled", "expired", "replaced_lease", "public_terminal", "gate_on",
+            "head_sha", "run_attempt", "actor", "triggering_actor", "display_title", "repository",
+            "failed_control", "skipped_control", "missing_control", "duplicate_control", "wrong_job_run")
+        for fault in faults:
+            f, grant = self.completion_fixture(); original = f.api
+            if fault in ("failure", "cancelled"): f.source["conclusion"] = fault
+            if fault == "expired": f.now = grant["expires_at"]
+            if fault == "replaced_lease": f.values[lease.LEASE]["value"] = gateway.canonical(dict(grant, source_sha="f"*40)).decode()
+            if fault == "public_terminal": f.public.update(status="completed", conclusion="success")
+            if fault == "gate_on": f.gates[lease.CODE] = "true"
+            if fault == "head_sha": f.source["head_sha"] = "f"*40
+            if fault == "run_attempt": f.source["run_attempt"] = 2
+            if fault in ("actor", "triggering_actor"): f.source[fault] = {"login":lease.OWNER, "id":1}
+            if fault == "display_title": f.source["display_title"] = "other order"
+            if fault == "repository": f.source["repository"] = {"full_name":lease.SOURCE, "id":1}
+            def call(repo, method, path, token, body=None):
+                result = original(repo, method, path, token, body)
+                if path == "actions/runs/234/jobs?per_page=50":
+                    if fault == "failed_control": result["jobs"][1]["conclusion"] = "failure"
+                    if fault == "skipped_control": result["jobs"][1]["conclusion"] = "skipped"
+                    if fault == "missing_control": result["jobs"].pop()
+                    if fault == "duplicate_control": result["jobs"].append(copy.deepcopy(result["jobs"][1]))
+                    if fault == "wrong_job_run": result["jobs"][1]["run_id"] = 999
+                return result
+            with self.subTest(fault=fault), self.assertRaises(Exception):
+                gateway.await_controller_completion(call, "s", "p", grant,
+                    clock=lambda:f.now, monotonic=lambda:f.now, pause=f.pause, deadline=f.now+60)
+            self.assertTrue(all(c[1] == "GET" for c in f.calls))
+
+    def test_completion_wait_has_a_monotonic_bound_even_with_frozen_wall_clock(self):
+        f, grant = self.completion_fixture(); f.source.update(status="in_progress", conclusion=None); f.finish_at = None
+        with self.assertRaisesRegex(Exception, "FINALIZATION_TIMEOUT"):
+            gateway.await_controller_completion(f.api, "s", "p", grant,
+                clock=lambda:NOW, monotonic=lambda:f.now, pause=f.pause, deadline=f.now+500)
+        self.assertEqual(f.now, NOW+60)
+        self.assertTrue(all(c[1] == "GET" for c in f.calls))
+
     def test_watchdog_termination_during_graph_wait_prevents_gate_enable(self):
         f=Fixture(); original=f.api
         def call(repo,method,path,token,body=None):

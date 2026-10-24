@@ -42,7 +42,7 @@ def decode(raw, *, now):
     return value
 
 
-def parent(run, *, repository, repository_id, run_id, head, branch, workflow, title, now):
+def parent(run, *, repository, repository_id, run_id, head, branch, workflow, title, now, completed=False):
     require(type(run) is dict and type(run.get("id")) is int and str(run["id"]) == run_id
             and type(run.get("repository")) is dict
             and run["repository"].get("full_name") == repository
@@ -50,7 +50,8 @@ def parent(run, *, repository, repository_id, run_id, head, branch, workflow, ti
             and run.get("head_sha") == head and run.get("head_branch") == branch
             and run.get("path") == workflow and run.get("event") == "workflow_dispatch"
             and type(run.get("run_attempt")) is int and run["run_attempt"] == 1
-            and run.get("status") in ACTIVE and run.get("conclusion") is None
+            and ((run.get("status") == "completed" and run.get("conclusion") == "success") if completed
+                 else (run.get("status") in ACTIVE and run.get("conclusion") is None))
             and run.get("display_title") == title)
     for name in ("actor", "triggering_actor"):
         identity = run.get(name)
@@ -70,12 +71,12 @@ def public_parent(lease, run, *, now):
     require(start <= lease["issued_at"] <= start + 300 and lease["expires_at"] <= start + TTL_SECONDS)
 
 
-def source_parent(lease, run, *, now):
+def source_parent(lease, run, *, now, completed=False):
     lease = decode(json.dumps(lease), now=now)
     start = parent(run, repository=SOURCE, repository_id=SOURCE_ID,
         run_id=lease["controller_run_id"], head=lease["source_sha"], branch=BRANCH,
         workflow=".github/workflows/orchestrator-component-controller.yml",
-        title="CW component controller " + lease["work_order_sha256"], now=now)
+        title="CW component controller " + lease["work_order_sha256"], now=now, completed=completed)
     require(abs(start - lease["issued_at"]) <= 300)
 
 

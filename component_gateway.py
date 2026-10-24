@@ -268,6 +268,36 @@ def verify_active_watchdog(call, token, own, watch_id):
         and ready[0].get("conclusion") == "success" and guards[0].get("status") == "in_progress")
 
 
+def await_controller_completion(call, source_token, public_token, grant, *, clock, monotonic, pause, deadline):
+    """Read-only terminal handoff after both gates have been verified OFF.
+
+    A run can finish between two lease reads, or turn its gates OFF before
+    Actions publishes its terminal status. This window grants no new work.
+    """
+    deadline = min(deadline, monotonic() + 60)
+    while monotonic() < deadline:
+        now = int(clock())
+        stored = call(SOURCE, "GET", "actions/variables/" + lease.LEASE, source_token)
+        require(type(stored) is dict and stored.get("name") == lease.LEASE
+            and lease.decode(stored.get("value"), now=now) == grant)
+        lease.public_parent(grant, call(PUBLIC, "GET", "actions/runs/" + grant["gateway_run_id"], public_token), now=now)
+        require(all(read_gate(call, source_token, name) == "false" for name in (lease.PAID, lease.CODE)))
+        current = call(SOURCE, "GET", "actions/runs/" + grant["controller_run_id"], source_token)
+        require(type(current) is dict)
+        completed = current.get("status") == "completed"
+        lease.source_parent(grant, current, now=now, completed=completed)
+        if completed:
+            jobs = rows(call(SOURCE, "GET", "actions/runs/" + grant["controller_run_id"] + "/jobs?per_page=50", source_token), "jobs")
+            require(all(type(j) is dict and str(j.get("run_id")) == grant["controller_run_id"] for j in jobs))
+            for name in ("Prepare native graph while OFF", "Run native workers and integration"):
+                matches = [j for j in jobs if j.get("name") == name]
+                require(len(matches) == 1 and matches[0].get("status") == "completed"
+                    and matches[0].get("conclusion") == "success")
+            return "COMPONENT_CONTROLLER_SUCCEEDED_NATIVE_RESULTS_REQUIRE_READBACK"
+        pause(min(2, deadline - monotonic()))
+    raise ValueError("COMPONENT_CONTROLLER_FINALIZATION_TIMEOUT_NO_RETRY")
+
+
 def execute(env, *, call=api, clock=time.time, monotonic=time.monotonic, pause=time.sleep, audit=lambda phase: None):
     own = context(env)
     audit("COMPONENT_GATEWAY_OWNER_REVIEW")
@@ -284,6 +314,7 @@ def execute(env, *, call=api, clock=time.time, monotonic=time.monotonic, pause=t
     marker_name = launch_marker(call, source_token, public_token, own)
     if own["CW_PREFLIGHT_ONLY"] == "true":
         return "COMPONENT_GATEWAY_PREFLIGHT_VERIFIED_NO_DISPATCH_NO_SPEND"
+    off_attempted = False
     try:
         call(PUBLIC, "POST", "git/refs", public_token, {"ref": "refs/heads/" + marker_name, "sha": own["GITHUB_SHA"]})
         marker = call(PUBLIC, "GET", "git/ref/heads/" + marker_name, public_token)
@@ -337,15 +368,26 @@ def execute(env, *, call=api, clock=time.time, monotonic=time.monotonic, pause=t
         while monotonic() < deadline:
             current = call(SOURCE, "GET", "actions/runs/" + str(source["id"]), source_token)
             if current.get("status") == "completed":
-                require(current.get("conclusion") == "success")
-                return "COMPONENT_CONTROLLER_SUCCEEDED_NATIVE_RESULTS_REQUIRE_READBACK"
-            require(lease.active_lease(call, source_token, public_token, now=int(clock()), parent_id=own["GITHUB_RUN_ID"]) == grant)
-            verify_active_watchdog(call, public_token, own, watch_id)
-            require(all(read_gate(call, source_token, name) == "true" for name in (lease.PAID, lease.CODE)))
+                break
+            try:
+                require(lease.active_lease(call, source_token, public_token, now=int(clock()), parent_id=own["GITHUB_RUN_ID"]) == grant)
+                verify_active_watchdog(call, public_token, own, watch_id)
+                require(all(read_gate(call, source_token, name) == "true" for name in (lease.PAID, lease.CODE)))
+            except Exception:
+                # Revocation still shuts down immediately. Only a bounded,
+                # authenticated readback can distinguish completion from failure.
+                break
             pause(10)
-        raise ValueError("COMPONENT_CONTROLLER_TIMEOUT_NO_RETRY")
-    finally:
+        else:
+            raise ValueError("COMPONENT_CONTROLLER_TIMEOUT_NO_RETRY")
+        off_attempted = True
         force_off(call, source_token)
+        audit("COMPONENT_GATEWAY_FINALIZING_OFF_READ_ONLY")
+        return await_controller_completion(call, source_token, public_token, grant,
+            clock=clock, monotonic=monotonic, pause=pause, deadline=deadline)
+    finally:
+        if not off_attempted:
+            force_off(call, source_token)
 
 
 if __name__ == "__main__":
