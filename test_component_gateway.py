@@ -12,8 +12,8 @@ from test_orchestrator_code_lease import NOW, stamp
 
 
 def synthetic_budget():
-    return {"version": 2, "package": "issue129-20261022-accelerated", "cap_cents": 15000,
-        "max_requests": 500, "entries": [
+    return {"version": 2, "package": "issue129-20261022-accelerated", "cap_cents": 17500,
+        "max_requests": 600, "entries": [
             {"state": "CONSUMED", "ceiling_cents": 200 if i < 29 else 164,
              "request_id": f"{i:064x}"} for i in range(30)]}
 
@@ -110,23 +110,23 @@ class Fixture:
 
 
 class ComponentGatewayTests(unittest.TestCase):
-    def test_reservation_queue_keeps_150_dollars_500_calls_and_all_retained_unknowns(self):
+    def test_reservation_queue_keeps_175_dollars_600_calls_and_all_retained_unknowns(self):
         retained = {**synthetic_budget(), "cap_cents":7000, "max_requests":100}
         for cash, slots, ready in ((600,160,True),(599,160,False),(1965,229,True),
                                    (1200,180,True),(600,159,False)):
             current = synthetic_budget()
-            current["entries"].append({"state":"CONSUMED", "ceiling_cents":15000-5964-cash})
+            current["entries"].append({"state":"CONSUMED", "ceiling_cents":17500-5964-cash})
             current["entries"].extend({"state":"FINALIZED", "ceiling_cents":1, "settled_cents":0}
-                for _ in range(500-slots-len(current["entries"])))
+                for _ in range(600-slots-len(current["entries"])))
             before = copy.deepcopy(current)
             with self.subTest(cash=cash, slots=slots):
                 self.assertEqual(gateway.budget_capacity(current,retained),ready)
                 self.assertEqual(current,before)
-                self.assertEqual((current["cap_cents"],current["max_requests"]),(15000,500))
+                self.assertEqual((current["cap_cents"],current["max_requests"]),(17500,600))
 
     def test_actual_retained_budget_blocks_before_any_write_even_in_launch_mode(self):
         f = Fixture()
-        f.budget["entries"].append({"state":"CONSUMED","ceiling_cents":9000})
+        f.budget["entries"].append({"state":"CONSUMED","ceiling_cents":11500})
         original = copy.deepcopy(f.budget)
         self.assertEqual(f.execute(), "COMPONENT_GATEWAY_BUDGET_BLOCKED_NO_DISPATCH_NO_SPEND")
         self.assertTrue(all(method == "GET" for _, method, _, _ in f.calls))
@@ -135,10 +135,10 @@ class ComponentGatewayTests(unittest.TestCase):
     def test_historical_prefix_and_uncertain_costs_cannot_be_discounted(self):
         original = {**synthetic_budget(), "cap_cents":7000, "max_requests":100}
         for change in ("prefix", "unknown_settlement", "over_cap", "wrong_package"):
-            d = {**copy.deepcopy(original), "cap_cents":15000, "max_requests":500}
+            d = {**copy.deepcopy(original), "cap_cents":17500, "max_requests":600}
             if change == "prefix": d["entries"][0]["ceiling_cents"] = 1
             if change == "unknown_settlement": d["entries"].append({"state": "CONSUMED", "ceiling_cents": 600, "settled_cents": 0})
-            if change == "over_cap": d["entries"].append({"state": "RESERVED", "ceiling_cents": 15000})
+            if change == "over_cap": d["entries"].append({"state": "RESERVED", "ceiling_cents": 17500})
             if change == "wrong_package": d["package"] = "replacement"
             with self.subTest(change=change), self.assertRaises(Exception):
                 gateway.budget_capacity(d, original)
