@@ -68,8 +68,9 @@ class Fixture:
                 if path == "actions/workflows/one-shot-gateway.yml/runs?per_page=50":
                     return {"workflow_runs": [self.selftest, self.watch]}
                 if path == "actions/runs/345": return copy.deepcopy(self.watch)
-                if path == "actions/runs/345/jobs?per_page=50": return {"jobs": [{"name": "Independent OFF-only watchdog", "status": "in_progress",
-                    "steps": [{"name": "Verify gate OFF or guard active pilot (no models)", "status": "in_progress"}]}]}
+                if path == "actions/runs/345/jobs?per_page=50": return {"jobs": [
+                    {"run_id":345,"name":"Verify component watchdog readiness","status":"completed","conclusion":"success","steps":None},
+                    {"run_id":345,"name":"Independent OFF-only watchdog","status":"in_progress","steps":[]}]}
                 if path.startswith("git/ref/heads/cw-component-"): return self.markers.get(path)
             if repo == lease.SOURCE:
                 if path == "": return {"id": lease.SOURCE_ID, "full_name": lease.SOURCE, "default_branch": lease.BRANCH}
@@ -87,8 +88,8 @@ class Fixture:
                     if self.finish_at is not None and self.now >= self.finish_at:
                         return dict(self.source, status="completed", conclusion="success")
                     return copy.deepcopy(self.source)
-                if path == "actions/runs/234/jobs?per_page=50": return {"jobs": [{"steps": [{"name": "Prepare native graph while OFF",
-                    "status": "completed", "conclusion": "success" if self.prepared else "failure"}]}]}
+                if path == "actions/runs/234/jobs?per_page=50": return {"jobs": [{"run_id":234,"name":"Prepare native graph while OFF", "steps":None,
+                    "status":"completed", "conclusion":"success" if self.prepared else "failure"}]}
         if repo == lease.PUBLIC and method == "POST":
             if path == "git/refs":
                 self.markers["git/ref/heads/" + body["ref"].removeprefix("refs/heads/")] = {"ref": body["ref"], "object": {"sha": body["sha"]}}
@@ -110,6 +111,37 @@ class Fixture:
 
 
 class ComponentGatewayTests(unittest.TestCase):
+    def test_watchdog_waits_for_completed_readiness_and_delayed_guard_without_step_metadata(self):
+        f = Fixture(); original = f.api; start=f.now
+        def call(repo,method,path,token,body=None):
+            result=original(repo,method,path,token,body)
+            if path=="actions/runs/345/jobs?per_page=50":
+                if f.now-start<80: return {"jobs":[]}
+                if f.now-start<95: result["jobs"][1]["status"]="queued"
+            return result
+        self.assertEqual(gateway.arm_watchdog(call,"public-test-token",f.env,
+            clock=lambda:f.now,monotonic=lambda:f.now,pause=f.pause),"345")
+        self.assertGreaterEqual(f.now-start,120)
+        self.assertEqual(sum(c[1]=="POST" for c in f.calls),1)
+
+    def test_unready_failed_or_foreign_jobs_never_enable_gates(self):
+        for fault in ("absent", "failed_ready", "guard_terminal", "wrong_run", "duplicate", "prepare_absent"):
+            f = Fixture(); original=f.api
+            def call(repo,method,path,token,body=None):
+                result=original(repo,method,path,token,body)
+                if path=="actions/runs/345/jobs?per_page=50":
+                    if fault=="absent": result["jobs"]=result["jobs"][1:]
+                    if fault=="failed_ready": result["jobs"][0]["conclusion"]="failure"
+                    if fault=="guard_terminal": result["jobs"][1]["status"]="completed"
+                    if fault=="wrong_run": result["jobs"][0]["run_id"]=999
+                    if fault=="duplicate": result["jobs"].append(copy.deepcopy(result["jobs"][0]))
+                if path=="actions/runs/234/jobs?per_page=50" and fault=="prepare_absent": result["jobs"]=[]
+                return result
+            with self.subTest(fault=fault),patch.object(gateway,"source_preflight",return_value=True),self.assertRaises(Exception):
+                gateway.execute(f.env,call=call,clock=lambda:f.now,monotonic=lambda:f.now,pause=f.pause)
+            self.assertFalse(any(c[1]=="PATCH" and c[3].get("value")=="true" for c in f.calls))
+            self.assertTrue(all(v=="false" for v in f.gates.values()))
+
     def test_reservation_queue_keeps_175_dollars_600_calls_and_all_retained_unknowns(self):
         retained = {**synthetic_budget(), "cap_cents":7000, "max_requests":100}
         for cash, slots, ready in ((600,160,True),(599,160,False),(1965,229,True),

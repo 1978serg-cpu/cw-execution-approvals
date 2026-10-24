@@ -195,16 +195,22 @@ def arm_watchdog(call, token, own, *, clock, monotonic, pause):
         {"ref": "main", "inputs": {"mode": "component_watch", "parent_run_id": own["GITHUB_RUN_ID"]}})
     run = discover(call, token, PUBLIC, WATCHDOG, "CW issue88 component_watch " + own["GITHUB_RUN_ID"],
         own["GITHUB_SHA"], "main", started, clock=clock, monotonic=monotonic, pause=pause, owner_required=False, timeout_seconds=300)
-    deadline, active_since = monotonic() + 65, None
+    deadline, active_since = monotonic() + 180, None
     while monotonic() < deadline:
         current = call(PUBLIC, "GET", "actions/runs/" + str(run["id"]), token)
-        require(current.get("status") == "in_progress" and current.get("run_attempt") == 1
+        require(current.get("status") in lease.ACTIVE and current.get("run_attempt") == 1
             and current.get("head_sha") == own["GITHUB_SHA"])
         jobs = rows(call(PUBLIC, "GET", "actions/runs/" + str(run["id"]) + "/jobs?per_page=50", token), "jobs")
-        jobs = [j for j in jobs if j.get("name") == "Independent OFF-only watchdog"]
-        require(len(jobs) == 1 and jobs[0].get("status") == "in_progress")
-        active = any(s.get("name") == "Verify gate OFF or guard active pilot (no models)"
-            and s.get("status") == "in_progress" for s in jobs[0].get("steps", []))
+        require(all(type(j) is dict and j.get("run_id") == run["id"] for j in jobs))
+        ready = [j for j in jobs if j.get("name") == "Verify component watchdog readiness"]
+        guards = [j for j in jobs if j.get("name") == "Independent OFF-only watchdog"]
+        require(len(ready) <= 1 and len(guards) <= 1)
+        if ready and ready[0].get("status") == "completed":
+            require(ready[0].get("conclusion") == "success")
+        if guards:
+            require(guards[0].get("status") in ("queued", "waiting", "pending", "in_progress"))
+        active = bool(ready and ready[0].get("status") == "completed"
+            and ready[0].get("conclusion") == "success" and guards and guards[0].get("status") == "in_progress")
         if active:
             if active_since is None: active_since = monotonic()
             if monotonic() - active_since >= 25: return str(run["id"])
@@ -250,8 +256,9 @@ def launch_marker(call, source_token, public_token, own):
     return name
 
 
-def execute(env, *, call=api, clock=time.time, monotonic=time.monotonic, pause=time.sleep):
+def execute(env, *, call=api, clock=time.time, monotonic=time.monotonic, pause=time.sleep, audit=lambda phase: None):
     own = context(env)
+    audit("COMPONENT_GATEWAY_OWNER_REVIEW")
     source_token, public_token = own["CW_GATEWAY_OPERATOR_TOKEN"], own["GH_PUBLIC_TOKEN"]
     public_run = public_approval(call, public_token, own, int(clock()))
     # Environment review can take longer than the existing five-minute parent
@@ -261,6 +268,7 @@ def execute(env, *, call=api, clock=time.time, monotonic=time.monotonic, pause=t
         return "COMPONENT_APPROVAL_WINDOW_EXPIRED_NO_DISPATCH_NO_SPEND"
     if not source_preflight(call, source_token, own):
         return "COMPONENT_GATEWAY_BUDGET_BLOCKED_NO_DISPATCH_NO_SPEND"
+    audit("COMPONENT_GATEWAY_PREFLIGHT_READY_OFF")
     marker_name = launch_marker(call, source_token, public_token, own)
     if own["CW_PREFLIGHT_ONLY"] == "true":
         return "COMPONENT_GATEWAY_PREFLIGHT_VERIFIED_NO_DISPATCH_NO_SPEND"
@@ -276,6 +284,7 @@ def execute(env, *, call=api, clock=time.time, monotonic=time.monotonic, pause=t
             {"ref": lease.BRANCH, "inputs": inputs})
         source = discover(call, source_token, SOURCE, CONTROLLER, "CW component controller " + own["CW_WORK_ORDER_SHA256"],
             own["CW_SOURCE_SHA"], lease.BRANCH, started, clock=clock, monotonic=monotonic, pause=pause, timeout_seconds=300)
+        audit("COMPONENT_GATEWAY_CONTROLLER_BOUND_OFF")
         issued = int(clock())
         grant = {"version": 1, "package": "issue129-20261022-accelerated", "source_sha": own["CW_SOURCE_SHA"],
             "approval_ref": own["CW_APPROVAL_REF"], "work_order_sha256": own["CW_WORK_ORDER_SHA256"],
@@ -289,23 +298,28 @@ def execute(env, *, call=api, clock=time.time, monotonic=time.monotonic, pause=t
             source_token, value)
         stored = call(SOURCE, "GET", "actions/variables/" + lease.LEASE, source_token)
         require(type(stored) is dict and stored.get("name") == lease.LEASE and stored.get("value") == value["value"])
+        audit("COMPONENT_GATEWAY_LEASE_STORED_ARMING_WATCHDOG")
         watch_id = arm_watchdog(call, public_token, own, clock=clock, monotonic=monotonic, pause=pause)
+        audit("COMPONENT_GATEWAY_WATCHDOG_READY_WAITING_GRAPH")
         # The source must finish OFF-only graph admission before either gate can
         # be enabled. Merely starting its controller job is insufficient.
         deadline = monotonic() + 180
         prepared = False
         while monotonic() < deadline:
             jobs = rows(call(SOURCE, "GET", "actions/runs/" + str(source["id"]) + "/jobs?per_page=50", source_token), "jobs")
-            steps = [s for j in jobs for s in j.get("steps", []) if s.get("name") == "Prepare native graph while OFF"]
-            require(len(steps) <= 1)
-            if steps and steps[0].get("status") == "completed":
-                require(steps[0].get("conclusion") == "success"); prepared = True; break
+            require(all(type(j) is dict and j.get("run_id") == source["id"] for j in jobs))
+            preparation = [j for j in jobs if j.get("name") == "Prepare native graph while OFF"]
+            require(len(preparation) <= 1)
+            if preparation and preparation[0].get("status") == "completed":
+                require(preparation[0].get("conclusion") == "success"); prepared = True; break
             pause(2)
         require(prepared and lease.active_lease(call, source_token, public_token, now=int(clock()), parent_id=own["GITHUB_RUN_ID"]) == grant)
+        audit("COMPONENT_GATEWAY_GRAPH_PREPARED_OFF")
         require(all(read_gate(call, source_token, name) == "false" for name in (lease.PAID, lease.CODE)))
         for name in (lease.CODE, lease.PAID):
             call(SOURCE, "PATCH", "actions/variables/" + name, source_token, {"name": name, "value": "true"})
             require(read_gate(call, source_token, name) == "true")
+        audit("COMPONENT_GATEWAY_GATES_ARMED")
         deadline = monotonic() + max(0, grant["expires_at"] - int(clock()))
         while monotonic() < deadline:
             current = call(SOURCE, "GET", "actions/runs/" + str(source["id"]), source_token)
@@ -324,6 +338,9 @@ def execute(env, *, call=api, clock=time.time, monotonic=time.monotonic, pause=t
 
 if __name__ == "__main__":
     try:
-        print(execute(os.environ))
-    except Exception:
-        raise SystemExit("COMPONENT_GATEWAY_DENIED_OR_UNKNOWN_NO_RETRY") from None
+        print(execute(os.environ, audit=lambda phase: print(phase, flush=True)))
+    except Exception as error:
+        code = str(error)
+        if not re.fullmatch(r"[A-Z][A-Z0-9_]{1,95}", code):
+            code = "COMPONENT_GATEWAY_UNKNOWN_" + type(error).__name__.upper()
+        raise SystemExit("COMPONENT_GATEWAY_DENIED_NO_RETRY:" + code) from None
