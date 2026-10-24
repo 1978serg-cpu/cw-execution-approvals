@@ -111,6 +111,17 @@ class Fixture:
 
 
 class ComponentGatewayTests(unittest.TestCase):
+    def test_watchdog_termination_during_graph_wait_prevents_gate_enable(self):
+        f=Fixture(); original=f.api
+        def call(repo,method,path,token,body=None):
+            result=original(repo,method,path,token,body)
+            if path=="actions/runs/234/jobs?per_page=50": f.watch["status"]="completed"
+            return result
+        with patch.object(gateway,"source_preflight",return_value=True),self.assertRaises(Exception):
+            gateway.execute(f.env,call=call,clock=lambda:f.now,monotonic=lambda:f.now,pause=f.pause)
+        self.assertFalse(any(c[1]=="PATCH" and c[3].get("value")=="true" for c in f.calls))
+        self.assertTrue(all(v=="false" for v in f.gates.values()))
+
     def test_watchdog_waits_for_completed_readiness_and_delayed_guard_without_step_metadata(self):
         f = Fixture(); original = f.api; start=f.now
         def call(repo,method,path,token,body=None):

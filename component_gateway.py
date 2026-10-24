@@ -256,6 +256,18 @@ def launch_marker(call, source_token, public_token, own):
     return name
 
 
+def verify_active_watchdog(call, token, own, watch_id):
+    run = call(PUBLIC, "GET", "actions/runs/" + watch_id, token)
+    require(type(run) is dict and run.get("status") == "in_progress"
+        and run.get("run_attempt") == 1 and run.get("head_sha") == own["GITHUB_SHA"])
+    jobs = rows(call(PUBLIC, "GET", "actions/runs/" + watch_id + "/jobs?per_page=50", token), "jobs")
+    require(all(type(j) is dict and str(j.get("run_id")) == watch_id for j in jobs))
+    ready = [j for j in jobs if j.get("name") == "Verify component watchdog readiness"]
+    guards = [j for j in jobs if j.get("name") == "Independent OFF-only watchdog"]
+    require(len(ready) == len(guards) == 1 and ready[0].get("status") == "completed"
+        and ready[0].get("conclusion") == "success" and guards[0].get("status") == "in_progress")
+
+
 def execute(env, *, call=api, clock=time.time, monotonic=time.monotonic, pause=time.sleep, audit=lambda phase: None):
     own = context(env)
     audit("COMPONENT_GATEWAY_OWNER_REVIEW")
@@ -315,6 +327,7 @@ def execute(env, *, call=api, clock=time.time, monotonic=time.monotonic, pause=t
             pause(2)
         require(prepared and lease.active_lease(call, source_token, public_token, now=int(clock()), parent_id=own["GITHUB_RUN_ID"]) == grant)
         audit("COMPONENT_GATEWAY_GRAPH_PREPARED_OFF")
+        verify_active_watchdog(call, public_token, own, watch_id)
         require(all(read_gate(call, source_token, name) == "false" for name in (lease.PAID, lease.CODE)))
         for name in (lease.CODE, lease.PAID):
             call(SOURCE, "PATCH", "actions/variables/" + name, source_token, {"name": name, "value": "true"})
@@ -327,8 +340,7 @@ def execute(env, *, call=api, clock=time.time, monotonic=time.monotonic, pause=t
                 require(current.get("conclusion") == "success")
                 return "COMPONENT_CONTROLLER_SUCCEEDED_NATIVE_RESULTS_REQUIRE_READBACK"
             require(lease.active_lease(call, source_token, public_token, now=int(clock()), parent_id=own["GITHUB_RUN_ID"]) == grant)
-            watch = call(PUBLIC, "GET", "actions/runs/" + watch_id, public_token)
-            require(watch.get("status") == "in_progress" and watch.get("head_sha") == own["GITHUB_SHA"])
+            verify_active_watchdog(call, public_token, own, watch_id)
             require(all(read_gate(call, source_token, name) == "true" for name in (lease.PAID, lease.CODE)))
             pause(10)
         raise ValueError("COMPONENT_CONTROLLER_TIMEOUT_NO_RETRY")
