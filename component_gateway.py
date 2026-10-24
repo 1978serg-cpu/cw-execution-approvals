@@ -137,7 +137,7 @@ def read_file(call, token, path, ref):
 
 
 def budget_capacity(current, retained):
-    for budget, cap, count in ((current, 17500, 600), (retained, 7000, 100)):
+    for budget, cap, count in ((current, 27500, 600), (retained, 7000, 100)):
         require(type(budget) is dict and budget.get("version") == 2
             and budget.get("package") == "issue129-20261022-accelerated"
             and type(budget.get("cap_cents")) is int and budget["cap_cents"] == cap
@@ -153,7 +153,7 @@ def budget_capacity(current, retained):
         require("settled_cents" not in entry)
         return entry["ceiling_cents"]
     require(sum(cost(e) for e in retained["entries"]) == 5964)
-    remaining = 17500 - sum(cost(e) for e in current["entries"])
+    remaining = 27500 - sum(cost(e) for e in current["entries"])
     require(remaining >= 0)
     # The protected broker queues before a send when another approved Work is
     # holding a reserve. The private controller independently checks the four
@@ -302,7 +302,7 @@ def execute(env, *, call=api, clock=time.time, monotonic=time.monotonic, pause=t
             "approval_ref": own["CW_APPROVAL_REF"], "work_order_sha256": own["CW_WORK_ORDER_SHA256"],
             "spec_sha256": own["CW_SPEC_SHA256"], "controller_run_id": str(source["id"]),
             "gateway_run_id": own["GITHUB_RUN_ID"], "gateway_sha": own["GITHUB_SHA"], "issued_at": issued,
-            "expires_at": created_at(public_run) + lease.TTL_SECONDS, "cap_cents": 17500, "max_requests": 600}
+            "expires_at": created_at(public_run) + lease.TTL_SECONDS, "cap_cents": 27500, "max_requests": 600}
         lease.public_parent(grant, public_run, now=issued); lease.source_parent(grant, source, now=issued)
         old = call(SOURCE, "GET", "actions/variables/" + lease.LEASE, source_token)
         value = {"name": lease.LEASE, "value": canonical(grant).decode()}
