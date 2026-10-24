@@ -9,7 +9,7 @@ private task text and request records are never printed or committed here.
 
 The existing aggregate package and immutable historical cost/unknown records
 are retained. Insufficient concurrent reserves or request slots stop before
-any write, marker, queue preparation or dispatch. The owner-approved component policy is $175 / 600 requests. The existing
+any write, marker, queue preparation or dispatch. The owner-approved component policy is $275 / 600 requests. The existing
 $70 / 100 checkpoint must be converted once while OFF, retaining every record.
 The private controller and public lease require the same policy. A pure
 preflight cannot convert the budget or refund historical records.
