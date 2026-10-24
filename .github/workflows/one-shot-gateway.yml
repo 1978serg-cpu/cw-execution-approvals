@@ -29,8 +29,41 @@ on:
 permissions: {}
 
 jobs:
-  independent-off:
+  component-ready:
     if: >-
+      github.repository == '1978serg-cpu/cw-execution-approvals' &&
+      github.ref == 'refs/heads/main' && github.run_attempt == 1 &&
+      github.event_name == 'workflow_dispatch' && inputs.mode == 'component_watch'
+    name: Verify component watchdog readiness
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Authenticate both bound parents and prove OFF-only token for 25 seconds
+        env:
+          GH_PUBLIC_TOKEN: ${{ github.token }}
+          CW_GATEWAY_SHUTOFF_TOKEN: ${{ secrets.CW_GATEWAY_SHUTOFF_TOKEN }}
+          CW_PARENT_RUN_ID: ${{ inputs.parent_run_id }}
+        run: |
+          python3 - <<'PYREADY'
+          import os,time
+          from component_gateway import api
+          from orchestrator_component_lease import prepare_watch_component
+          print(prepare_watch_component(api,os.environ['CW_GATEWAY_SHUTOFF_TOKEN'],
+              os.environ['GH_PUBLIC_TOKEN'],parent_id=os.environ['CW_PARENT_RUN_ID'],
+              now=lambda:int(time.time()),monotonic=time.monotonic,pause=time.sleep),flush=True)
+          PYREADY
+  independent-off:
+    needs: [component-ready]
+    if: >-
+      always() &&
+      (inputs.mode != 'component_watch' || needs.component-ready.result == 'success') &&
       github.repository == '1978serg-cpu/cw-execution-approvals' &&
       github.ref == 'refs/heads/main' &&
       (github.event_name == 'schedule' ||
