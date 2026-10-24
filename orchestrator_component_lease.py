@@ -28,7 +28,7 @@ def decode(raw, *, now):
     require(type(value) is dict and set(value) == FIELDS
             and type(value["version"]) is int and value["version"] == 1
             and value["package"] == "issue129-20261022-accelerated"
-            and type(value["cap_cents"]) is int and value["cap_cents"] == 17500
+            and type(value["cap_cents"]) is int and value["cap_cents"] == 27500
             and type(value["max_requests"]) is int and value["max_requests"] == 600)
     for name, size in (("source_sha", 40), ("approval_ref", 40), ("gateway_sha", 40),
                        ("work_order_sha256", 64), ("spec_sha256", 64)):
