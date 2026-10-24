@@ -121,3 +121,27 @@ def watch_component(api, token, public_token, *, parent_id, now, monotonic, paus
         pause(15)
     force_off(api, token)
     return "COMPONENT_WATCHDOG_MONOTONIC_TTL_OFF"
+
+
+def prepare_watch_component(api, token, public_token, *, parent_id, now, monotonic, pause):
+    """A finite OFF-only job proves the same guard can authenticate both runs.
+
+    Its completed Actions job is observable even when GitHub omits all steps.
+    The independent continuous watchdog starts only after this job succeeds.
+    """
+    require(type(parent_id) is str and re.fullmatch(r"[1-9][0-9]{0,19}", parent_id))
+    def verify():
+        require(active_lease(api, token, public_token, now=now(), parent_id=parent_id) is not None)
+        require(all(read_gate(api, token, gate) == "false" for gate in (PAID, CODE)))
+    try:
+        verify()
+        force_off(api, token)
+        deadline = monotonic() + 25
+        while True:
+            verify()
+            if monotonic() >= deadline:
+                return "COMPONENT_WATCHDOG_READINESS_VERIFIED_OFF"
+            pause(min(5, deadline - monotonic()))
+    except Exception:
+        force_off(api, token)
+        raise ValueError("COMPONENT_WATCHDOG_READINESS_DENIED_OFF") from None

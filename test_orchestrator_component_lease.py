@@ -44,6 +44,29 @@ class ComponentFixture(Fixture):
 
 
 class ComponentLeaseTests(unittest.TestCase):
+    def test_readiness_proves_bound_parents_and_only_false_writes_for_25_seconds(self):
+        f = ComponentFixture(); f.gates = {component.PAID:"false",component.CODE:"false"}
+        start = f.mono
+        result = component.prepare_watch_component(f.api,"source-token","public-token",
+            parent_id=f.doc["gateway_run_id"],now=lambda:f.time,monotonic=lambda:f.mono,pause=f.pause)
+        self.assertEqual(result,"COMPONENT_WATCHDOG_READINESS_VERIFIED_OFF")
+        self.assertEqual(f.mono-start,25)
+        writes = [c for c in f.calls if c[1] != "GET"]
+        self.assertEqual(len(writes),2)
+        self.assertTrue(all(c[1]=="PATCH" and c[4]["value"]=="false" for c in writes))
+
+    def test_readiness_cannot_succeed_after_parent_revocation_or_uncertain_off_write(self):
+        for fault in ("parent", "gate", "write", "wrong_parent"):
+            f = ComponentFixture(); f.gates = {component.PAID:"false",component.CODE:"false"}
+            if fault=="parent": f.after_pause=lambda:f.source.update(status="completed")
+            if fault=="gate": f.after_pause=lambda:f.gates.update({component.CODE:"true"})
+            if fault=="write": f.failures.add((component.SOURCE,"PATCH","actions/variables/"+component.PAID))
+            with self.subTest(fault=fault), self.assertRaises(Exception):
+                component.prepare_watch_component(f.api,"source-token","public-token",
+                    parent_id="999" if fault=="wrong_parent" else f.doc["gateway_run_id"],
+                    now=lambda:f.time,monotonic=lambda:f.mono,pause=f.pause)
+            if fault!="write": self.assertTrue(all(v=="false" for v in f.gates.values()))
+
     def test_real_component_schema_allows_90_minutes(self):
         f = ComponentFixture()
         self.assertEqual(f.active(), f.doc)
