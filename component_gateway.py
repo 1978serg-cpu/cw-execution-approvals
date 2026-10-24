@@ -141,7 +141,10 @@ def budget_capacity(current, retained):
     require(sum(cost(e) for e in retained["entries"]) == 5964)
     remaining = 15000 - sum(cost(e) for e in current["entries"])
     require(remaining >= 0)
-    return remaining >= 2400 and 500 - len(current["entries"]) >= 70
+    # The protected broker queues before a send when another approved Work is
+    # holding a reserve. The private controller independently checks the four
+    # implementation allowances (48 each) and fresh integration headroom.
+    return remaining >= 600 and 500 - len(current["entries"]) >= 192
 
 
 def source_preflight(call, token, own):
