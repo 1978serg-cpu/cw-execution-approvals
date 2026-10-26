@@ -4,16 +4,18 @@ No provider client, private source execution, budget writer or queue editor.
 The private controller verifies the actual order, Claims, Results and Releases.
 """
 import base64
+import errno
 import hashlib
 import json
 import os
 import re
+import socket
 import time
 import urllib.error
 import urllib.request
 
 import orchestrator_component_lease as lease
-from orchestrator_code_lease import require, unique, force_off, read_gate, created_at
+from orchestrator_code_lease import LeaseDenied, require, unique, force_off, read_gate, created_at
 from code_gateway import NoRedirect, MAX_API_RESPONSE_BYTES, rows, discover
 
 SOURCE, PUBLIC = lease.SOURCE, lease.PUBLIC
@@ -23,6 +25,8 @@ CHECKPOINT = "6059deec7553c7f2a665f1e24c2b4fcde92e4c89"
 BUDGET = "cw-issue129-accelerated-budget"
 SHA = re.compile("[a-f0-9]{40}")
 HASH = re.compile("[a-f0-9]{64}")
+READ_ATTEMPTS = 2
+TRANSIENT_HTTP = frozenset((408, 500, 502, 503, 504))
 # Audited pre-provider failures. Original markers are retained forever.
 # A changed queue/budget or any other order is ineligible for recovery.
 PRELAUNCH_RECOVERY = {
@@ -54,6 +58,33 @@ def canonical(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
 
 
+def api_operation(path):
+    """A closed diagnostic vocabulary; never publish paths, IDs or bodies."""
+    if path == "": return "REPO"
+    if path.startswith("actions/variables"): return "VARIABLE"
+    if path.startswith("actions/workflows/"):
+        if path.endswith("/dispatches"): return "DISPATCH"
+        return "RUN_LIST"
+    if path.startswith("actions/runs/"):
+        if "/jobs" in path: return "JOBS"
+        if path.endswith("/approvals"): return "APPROVAL"
+        return "RUN"
+    if path.startswith("contents/"): return "FILE"
+    if path.startswith("branches/"): return "BRANCH"
+    if path.startswith("git/commits/"): return "COMMIT"
+    if path.startswith("git/ref"): return "REF"
+    return "OTHER"
+
+
+def transient_transport(error):
+    reason = error.reason if isinstance(error, urllib.error.URLError) else error
+    return (isinstance(reason, (TimeoutError, ConnectionError))
+        or isinstance(reason, OSError) and reason.errno in (
+            errno.ECONNRESET, errno.ECONNABORTED, errno.ETIMEDOUT, errno.EPIPE,
+            # Temporary DNS failures; certificate and permanent DNS errors fail closed.
+            socket.EAI_AGAIN))
+
+
 def api(repository, method, path, token, body=None):
     require(repository in (SOURCE, PUBLIC) and method in ("GET", "POST", "PATCH")
             and type(path) is str and not any(c in path for c in ("..", "#", "\\"))
@@ -71,18 +102,36 @@ def api(repository, method, path, token, body=None):
         headers={"Authorization": "Bearer " + token, "Accept": "application/vnd.github+json",
             "Content-Type": "application/json", "Cache-Control": "no-cache",
             "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "cw-component-gateway"})
-    try:
-        with urllib.request.build_opener(NoRedirect()).open(request, timeout=12) as response:
-            require(response.status in (200, 201, 204))
-            raw = response.read(MAX_API_RESPONSE_BYTES + 1)
-            require(len(raw) <= MAX_API_RESPONSE_BYTES)
-            return json.loads(raw, object_pairs_hook=unique) if raw.strip() else None
-    except urllib.error.HTTPError as error:
-        if method == "GET" and error.code == 404:
-            return None
-        raise ValueError("COMPONENT_API_OUTCOME_UNKNOWN_NO_RETRY") from None
-    except Exception:
-        raise ValueError("COMPONENT_API_OUTCOME_UNKNOWN_NO_RETRY") from None
+    operation = ("SOURCE" if repository == SOURCE else "PUBLIC") + "_" + method + "_" + api_operation(path)
+    attempts = READ_ATTEMPTS if method == "GET" else 1
+    for attempt in range(1, attempts + 1):
+        retryable = False
+        try:
+            with urllib.request.build_opener(NoRedirect()).open(request, timeout=12) as response:
+                require(response.status in (200, 201, 204))
+                raw = response.read(MAX_API_RESPONSE_BYTES + 1)
+                require(len(raw) <= MAX_API_RESPONSE_BYTES)
+                return json.loads(raw, object_pairs_hook=unique) if raw.strip() else None
+        except urllib.error.HTTPError as error:
+            if method == "GET" and error.code == 404:
+                error.close()
+                return None
+            code = error.code
+            kind = "HTTP_" + str(code) if type(code) is int and 100 <= code <= 599 else "HTTP_UNKNOWN"
+            retryable = type(code) is int and code in TRANSIENT_HTTP
+            error.close()
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as error:
+            retryable = transient_transport(error)
+            kind = "TRANSIENT_TRANSPORT" if retryable else "TRANSPORT_UNKNOWN"
+        except (ValueError, LeaseDenied) as error:
+            kind = "REDIRECT_DENIED" if str(error) == "CODE_GATEWAY_REDIRECT_DENIED" else "RESPONSE_INVALID"
+        except Exception:
+            kind = "TRANSPORT_UNKNOWN"
+        diagnostic = "COMPONENT_API_" + operation + "_" + kind
+        print(diagnostic + "_ATTEMPT_" + str(attempt), flush=True)
+        if method != "GET" or not retryable or attempt == attempts:
+            raise ValueError(diagnostic + "_NO_RETRY") from None
+        time.sleep(1)
 
 
 def context(env):
