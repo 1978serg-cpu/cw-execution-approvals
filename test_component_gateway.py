@@ -356,40 +356,41 @@ class ComponentGatewayTests(unittest.TestCase):
             return f.api(repo, method, path, token, body)
         return f, proofs, call, original
 
-    def test_exact_delayed_review_failure_has_one_read_only_recovery(self):
-        f, _, call, original = self.recovery(gateway.PRELAUNCH_RECOVERIES[1])
-        before = copy.deepcopy(f.markers)
-        name = gateway.launch_marker(call, "source-test-token", "public-test-token", f.env)
-        self.assertEqual(name, original.removeprefix("git/ref/heads/") + "-prelaunch-recovery1")
-        self.assertEqual(f.markers, before)
-        self.assertEqual(f.values, {})
-        self.assertTrue(all(method == "GET" for _, method, _, _ in f.calls))
-        f.markers["git/ref/heads/" + name] = {"object": {"sha": f.env["GITHUB_SHA"]}}
-        with self.assertRaises(Exception):
-            gateway.launch_marker(call, "source-test-token", "public-test-token", f.env)
-        self.assertEqual(f.markers[original], before[original])
-
-    def test_delayed_review_recovery_rejects_changed_evidence(self):
-        record = gateway.PRELAUNCH_RECOVERIES[1]
-        for damage in ("queue", "budget", "active", "successful", "attempt", "actor", "source", "order", "spec", "marker", "gate", "unknown"):
-            f, proofs, call, original = self.recovery(record)
-            private = proofs[(lease.SOURCE, "actions/runs/" + str(record["controller_run_id"]))]
-            if damage in ("queue", "budget"):
-                branch = "work-queue" if damage == "queue" else gateway.BUDGET
-                proofs[(lease.SOURCE, "git/ref/heads/" + branch)]["object"]["sha"] = "0" * 40
-            if damage == "active": private["status"] = "in_progress"
-            if damage == "successful": private["conclusion"] = "success"
-            if damage == "attempt": private["run_attempt"] = 2
-            if damage == "actor": private["actor"] = {"id": 1}
-            if damage == "source": private["head_sha"] = "0" * 40
-            if damage == "order": f.env["CW_APPROVAL_REF"] = "0" * 40
-            if damage == "spec": f.env["CW_SPEC_SHA256"] = "0" * 64
-            if damage == "marker": f.markers[original]["object"]["sha"] = "0" * 40
-            if damage == "gate": f.gates[lease.PAID] = "true"
-            if damage == "unknown": proofs[(lease.SOURCE, "actions/runs/" + str(record["controller_run_id"]))] = None
-            with self.subTest(damage=damage), self.assertRaises(Exception):
-                gateway.launch_marker(call, "source-test-token", "public-test-token", f.env)
+    def test_exact_audited_failures_have_one_read_only_recovery(self):
+        for record in gateway.PRELAUNCH_RECOVERIES[1:]:
+            f, _, call, original = self.recovery(record)
+            before = copy.deepcopy(f.markers)
+            name = gateway.launch_marker(call, "source-test-token", "public-test-token", f.env)
+            self.assertEqual(name, original.removeprefix("git/ref/heads/") + "-prelaunch-recovery1")
+            self.assertEqual(f.markers, before)
+            self.assertEqual(f.values, {})
             self.assertTrue(all(method == "GET" for _, method, _, _ in f.calls))
+            f.markers["git/ref/heads/" + name] = {"object": {"sha": f.env["GITHUB_SHA"]}}
+            with self.assertRaises(Exception):
+                gateway.launch_marker(call, "source-test-token", "public-test-token", f.env)
+            self.assertEqual(f.markers[original], before[original])
+
+    def test_audited_recoveries_reject_changed_evidence(self):
+        for record in gateway.PRELAUNCH_RECOVERIES[1:]:
+            for damage in ("queue", "budget", "active", "successful", "attempt", "actor", "source", "order", "spec", "marker", "gate", "unknown"):
+                f, proofs, call, original = self.recovery(record)
+                private = proofs[(lease.SOURCE, "actions/runs/" + str(record["controller_run_id"]))]
+                if damage in ("queue", "budget"):
+                    branch = "work-queue" if damage == "queue" else gateway.BUDGET
+                    proofs[(lease.SOURCE, "git/ref/heads/" + branch)]["object"]["sha"] = "0" * 40
+                if damage == "active": private["status"] = "in_progress"
+                if damage == "successful": private["conclusion"] = "success"
+                if damage == "attempt": private["run_attempt"] = 2
+                if damage == "actor": private["actor"] = {"id": 1}
+                if damage == "source": private["head_sha"] = "0" * 40
+                if damage == "order": f.env["CW_APPROVAL_REF"] = "0" * 40
+                if damage == "spec": f.env["CW_SPEC_SHA256"] = "0" * 64
+                if damage == "marker": f.markers[original]["object"]["sha"] = "0" * 40
+                if damage == "gate": f.gates[lease.PAID] = "true"
+                if damage == "unknown": proofs[(lease.SOURCE, "actions/runs/" + str(record["controller_run_id"]))] = None
+                with self.subTest(damage=damage), self.assertRaises(Exception):
+                    gateway.launch_marker(call, "source-test-token", "public-test-token", f.env)
+                self.assertTrue(all(method == "GET" for _, method, _, _ in f.calls))
 
     def test_audited_prelaunch_recovery_retains_history_and_is_single_use(self):
         f, _, call, original = self.recovery()
