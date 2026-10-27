@@ -62,6 +62,17 @@ PRELAUNCH_RECOVERIES = (
      "queue_sha": "3a68e8a9c14826b13359e7bf749d0295dda24a72",
      "budget_sha": "03e40e7594e98cbfd2b638f84daa5422721902b6",
      "gateway_run_id": 40378071351, "controller_run_id": 40378285608},
+    # Threshold-gap controller failed on expired read credential before admission.
+    # Audit 40571148504 confirms restored access and the same queue/budget heads.
+    {"approval": {
+        "CW_SOURCE_SHA": "720d1c298223bcf998341670835a8be7c057da30",
+        "CW_APPROVAL_REF": "25edd8f829009d3773355f7909afb7c181e5437c",
+        "CW_WORK_ORDER_SHA256": "6d745078e999130843a676ddee64ed8ab2848eda81e778992803975e5b53c561",
+        "CW_SPEC_SHA256": "ee96464165d808d315c815a01df9f117664aa08a3306675d05a072df7fd3572d",
+     }, "gateway_sha": "5504310ebbe67e7bbbb28869b19f9ba33b078085",
+     "queue_sha": "e921960fef0831b611e0d106f66cd937967274b1",
+     "budget_sha": "f79b8e41a7126e7fbe4743f84b1476264e0e102a",
+     "gateway_run_id": 40566137361, "controller_run_id": 40566329039},
 )
 
 
