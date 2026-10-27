@@ -12,7 +12,7 @@ from test_orchestrator_code_lease import NOW, stamp
 
 
 def synthetic_budget():
-    return {"version": 2, "package": "issue129-20261022-accelerated", "cap_cents": 27500,
+    return {"version": 2, "package": "issue129-20261022-accelerated", "cap_cents": 31923,
         "max_requests": 1000, "entries": [
             {"state": "CONSUMED", "ceiling_cents": 200 if i < 29 else 164,
              "request_id": f"{i:064x}"} for i in range(30)]}
@@ -147,7 +147,7 @@ class ComponentGatewayTests(unittest.TestCase):
         grant = {"version":1, "package":"issue129-20261022-accelerated", "source_sha":"a"*40,
             "approval_ref":"c"*40, "work_order_sha256":"d"*64, "spec_sha256":"e"*64,
             "controller_run_id":"234", "gateway_run_id":"123", "gateway_sha":"b"*40,
-            "issued_at":NOW, "expires_at":NOW+lease.TTL_SECONDS, "cap_cents":27500, "max_requests":1000}
+            "issued_at":NOW, "expires_at":NOW+lease.TTL_SECONDS, "cap_cents":31923, "max_requests":1000}
         f.values[lease.LEASE] = {"name":lease.LEASE, "value":gateway.canonical(grant).decode()}
         f.source.update(status="completed", conclusion="success"); f.finish_at = NOW
         return f, grant
@@ -245,18 +245,18 @@ class ComponentGatewayTests(unittest.TestCase):
         for cash, slots, ready in ((600,160,True),(599,160,False),(1965,229,True),
                                    (1200,180,True),(600,159,False)):
             current = synthetic_budget()
-            current["entries"].append({"state":"CONSUMED", "ceiling_cents":27500-5964-cash})
+            current["entries"].append({"state":"CONSUMED", "ceiling_cents":31923-5964-cash})
             current["entries"].extend({"state":"FINALIZED", "ceiling_cents":1, "settled_cents":0}
                 for _ in range(1000-slots-len(current["entries"])))
             before = copy.deepcopy(current)
             with self.subTest(cash=cash, slots=slots):
                 self.assertEqual(gateway.budget_capacity(current,retained),ready)
                 self.assertEqual(current,before)
-                self.assertEqual((current["cap_cents"],current["max_requests"]),(27500,1000))
+                self.assertEqual((current["cap_cents"],current["max_requests"]),(31923,1000))
 
     def test_actual_retained_budget_blocks_before_any_write_even_in_launch_mode(self):
         f = Fixture()
-        f.budget["entries"].append({"state":"CONSUMED","ceiling_cents":27500-6000})
+        f.budget["entries"].append({"state":"CONSUMED","ceiling_cents":31923-6000})
         original = copy.deepcopy(f.budget)
         self.assertEqual(f.execute(), "COMPONENT_GATEWAY_BUDGET_BLOCKED_NO_DISPATCH_NO_SPEND")
         self.assertTrue(all(method == "GET" for _, method, _, _ in f.calls))
@@ -265,10 +265,10 @@ class ComponentGatewayTests(unittest.TestCase):
     def test_historical_prefix_and_uncertain_costs_cannot_be_discounted(self):
         original = {**synthetic_budget(), "cap_cents":7000, "max_requests":100}
         for change in ("prefix", "unknown_settlement", "over_cap", "wrong_package"):
-            d = {**copy.deepcopy(original), "cap_cents":27500, "max_requests":1000}
+            d = {**copy.deepcopy(original), "cap_cents":31923, "max_requests":1000}
             if change == "prefix": d["entries"][0]["ceiling_cents"] = 1
             if change == "unknown_settlement": d["entries"].append({"state": "CONSUMED", "ceiling_cents": 600, "settled_cents": 0})
-            if change == "over_cap": d["entries"].append({"state": "RESERVED", "ceiling_cents": 27500})
+            if change == "over_cap": d["entries"].append({"state": "RESERVED", "ceiling_cents": 31923})
             if change == "wrong_package": d["package"] = "replacement"
             with self.subTest(change=change), self.assertRaises(Exception):
                 gateway.budget_capacity(d, original)
