@@ -51,6 +51,17 @@ PRELAUNCH_RECOVERIES = (
      "queue_sha": "84a9dd97ca82b966c5bf8299b8a714bf07bf20d1",
      "budget_sha": "780b7613b05548b883bb2b5365689410aed1760a",
      "gateway_run_id": 40087546290, "controller_run_id": 40088701855},
+    # Prepared UI Work never reached Claim/Dispatch/provider. Both terminal
+    # failures and these exact unchanged histories were checked before recovery.
+    {"approval": {
+        "CW_SOURCE_SHA": "5371176b0001a615cbe2e070cfa689d742deb670",
+        "CW_APPROVAL_REF": "3b90bb3098187eee713bf9d4c0464baddb815532",
+        "CW_WORK_ORDER_SHA256": "f9d0210da5c14ad2906b1858aa347dca315b394c8d7be740415521e7f66aeef2",
+        "CW_SPEC_SHA256": "1e80decb9eea52f6f55c214a4362fa844310c66e97278f111ede3ea244193bd5",
+     }, "gateway_sha": "608b5b685bb106ace98535d1ae84c5912ef4f40e",
+     "queue_sha": "3a68e8a9c14826b13359e7bf749d0295dda24a72",
+     "budget_sha": "03e40e7594e98cbfd2b638f84daa5422721902b6",
+     "gateway_run_id": 40378071351, "controller_run_id": 40378285608},
 )
 
 
@@ -298,7 +309,7 @@ def launch_marker(call, source_token, public_token, own):
         ref = call(SOURCE, "GET", "git/ref/heads/" + branch, source_token)
         require(type(ref) is dict and ref.get("object", {}).get("sha") == expected)
     # Exact unchanged histories are mandatory, not merely a remaining balance.
-    # Private prepare independently requires all five Works available/attempts=0.
+    # Private prepare requires every planned Work available/attempts=0.
     require(all(read_gate(call, source_token, gate) == "false" for gate in (lease.PAID, lease.CODE)))
     name += "-prelaunch-recovery1"
     require(call(PUBLIC, "GET", "git/ref/heads/" + name, public_token) is None)
